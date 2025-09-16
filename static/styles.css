@@ -1,0 +1,151 @@
+:root {
+  --bg: #0f1115;
+  --panel: #151821;
+  --fg: #e6e6e6;
+  --muted: #9aa1ac;
+  --blue: #4da3ff;
+  --green: #33d17a;
+  --red: #ff5c5c;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, ui-sans-serif, Segoe UI, Roboto, Ubuntu;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.app {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 20px;
+}
+
+header .model {
+  color: var(--muted);
+}
+
+header .toggles label {
+  margin-right: 12px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+#chat {
+  background: var(--panel);
+  border-radius: 12px;
+  padding: 16px;
+  height: 55vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.bubble {
+  max-width: 80%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+}
+
+.bubble.user {
+  align-self: flex-end;
+  background: #243047;
+}
+
+.bubble.assistant {
+  align-self: flex-start;
+  background: #1b2636;
+}
+
+#composer {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#composer textarea {
+  width: 100%;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid #2a3242;
+  background: #0f141f;
+  color: var(--fg);
+  resize: vertical;
+}
+
+#composer .row {
+  display: flex;
+  gap: 8px;
+}
+
+#composer .row.small {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+#composer input[type="text"],
+#composer input[type="number"] {
+  flex: 1;
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid #2a3242;
+  background: #0f141f;
+  color: var(--fg);
+}
+
+#composer button {
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: none;
+  background: var(--blue);
+  color: #000;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#composer button:hover {
+  filter: brightness(1.1);
+}
+
+.file-tools {
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.file-badge {
+  padding: 0.15rem 0.5rem;
+  border-radius: 0.5rem;
+  background: #eee;
+}
+
+.link {
+  background: none;
+  border: none;
+  color: #555;
+  cursor: pointer;
+}
+
+.nowrap {
+  white-space: nowrap;
+}

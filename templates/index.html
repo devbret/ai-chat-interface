@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>8x7b Chat Interface</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link href="/static/styles.css" rel="stylesheet" />
+  </head>
+  <body>
+    <div class="app">
+      <header>
+        <h1>8x7b Chat Interface</h1>
+        <div class="toggles">
+          <label
+            ><input id="streamToggle" type="checkbox" checked /> Stream</label
+          >
+          <label
+            ><input id="sysToggle" type="checkbox" /> Send system prompt</label
+          >
+        </div>
+      </header>
+
+      <main id="chat"></main>
+
+      <form id="composer">
+        <textarea
+          id="prompt"
+          rows="3"
+          placeholder="Ask your question…"
+        ></textarea>
+
+        <div class="row file-tools">
+          <button id="attachBtn" type="button">Attach .txt</button>
+          <input id="fileInput" type="file" accept=".txt" hidden />
+          <span id="fileBadge" class="file-badge" hidden></span>
+          <button id="clearFileBtn" type="button" class="link" hidden>x</button>
+
+          <input
+            id="taskInput"
+            type="text"
+            placeholder="Task (optional, e.g., Extract entities & dates)"
+            aria-label="File analysis task"
+          />
+          <label class="nowrap">
+            <input id="fileStreamToggle" type="checkbox" checked />
+            Stream file analysis
+          </label>
+        </div>
+
+        <div class="row">
+          <input
+            id="system"
+            type="text"
+            placeholder="System prompt (optional)"
+          />
+          <button id="sendBtn" type="submit">Send</button>
+        </div>
+
+        <div class="row small">
+          <label
+            >Max tokens
+            <input
+              id="numPredict"
+              type="number"
+              min="64"
+              max="4096"
+              value="512"
+            />
+          </label>
+          <label
+            >Temp
+            <input
+              id="temp"
+              step="0.1"
+              type="number"
+              min="0"
+              max="1"
+              value="0.2"
+            />
+          </label>
+          <label
+            >Context
+            <input
+              id="numCtx"
+              type="number"
+              min="2048"
+              max="32768"
+              value="8192"
+            />
+          </label>
+        </div>
+      </form>
+    </div>
+
+    <script src="/static/main.js"></script>
+  </body>
+</html>
