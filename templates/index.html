@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -9,31 +9,47 @@
   <body>
     <div class="app">
       <header>
-        <h1>AI Chat Interface</h1>
+        <div class="header-left">
+          <h1>AI Chat Interface</h1>
+          <p class="subtitle">Streaming chat, file analysis, markdown output</p>
+        </div>
+
         <div class="toggles">
-          <label
-            ><input id="streamToggle" type="checkbox" checked /> Stream</label
-          >
-          <label
-            ><input id="sysToggle" type="checkbox" /> Send system prompt</label
-          >
+          <label>
+            <input id="streamToggle" type="checkbox" checked />
+            Stream
+          </label>
+
+          <label>
+            <input id="sysToggle" type="checkbox" />
+            Send system prompt
+          </label>
         </div>
       </header>
 
-      <main id="chat"></main>
+      <main
+        id="chat"
+        role="log"
+        aria-live="polite"
+        aria-relevant="additions text"
+        aria-label="Chat messages"
+      ></main>
 
       <form id="composer">
         <textarea
           id="prompt"
           rows="3"
           placeholder="Ask your question…"
+          aria-label="Prompt"
         ></textarea>
 
         <div class="row file-tools">
           <button id="attachBtn" type="button">Attach .txt</button>
           <input id="fileInput" type="file" accept=".txt" hidden />
           <span id="fileBadge" class="file-badge" hidden></span>
-          <button id="clearFileBtn" type="button" class="link" hidden>x</button>
+          <button id="clearFileBtn" type="button" class="link danger" hidden>
+            Remove
+          </button>
 
           <input
             id="taskInput"
@@ -41,6 +57,7 @@
             placeholder="Task (optional, e.g., Extract entities & dates)"
             aria-label="File analysis task"
           />
+
           <label class="nowrap">
             <input id="fileStreamToggle" type="checkbox" checked />
             Stream file analysis
@@ -52,14 +69,15 @@
             id="system"
             type="text"
             placeholder="System prompt (optional)"
+            aria-label="System prompt"
           />
           <button id="sendBtn" type="submit">Send</button>
           <button id="stopBtn" type="button" class="link" hidden>Stop</button>
         </div>
 
-        <div class="row small">
-          <label
-            >Max tokens
+        <div class="row small controls-row">
+          <label>
+            Max tokens
             <input
               id="numPredict"
               type="number"
@@ -68,8 +86,9 @@
               value="512"
             />
           </label>
-          <label
-            >Temp
+
+          <label>
+            Temp
             <input
               id="temp"
               step="0.1"
@@ -79,8 +98,9 @@
               value="0.2"
             />
           </label>
-          <label
-            >Context
+
+          <label>
+            Context
             <input
               id="numCtx"
               type="number"
