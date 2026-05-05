@@ -42,6 +42,7 @@ function sanitizeUrl(url) {
   if (/^https?:\/\//i.test(trimmed)) return trimmed;
   return "#";
 }
+
 function renderMarkdown(md = "") {
   let source = escapeHtml(md);
 
