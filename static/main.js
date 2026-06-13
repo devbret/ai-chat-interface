@@ -28,89 +28,56 @@ function formatTime(date = new Date()) {
   });
 }
 
-function escapeHtml(str = "") {
-  return str
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
+marked.setOptions({
+  gfm: true,
+  breaks: true,
+});
+
+marked.use(markedFootnote());
+
+function ensureSeparatorBreaks(markdown) {
+  const lines = (markdown || "").split("\n");
+  const out = [];
+  let inFence = false;
+  let fenceChar = "";
+  const isDashRule = (line) => /^ {0,3}-{3,}\s*$/.test(line);
+  for (const line of lines) {
+    const fence = line.match(/^ {0,3}(`|~){3,}/);
+    if (fence) {
+      const ch = fence[1];
+      if (!inFence) {
+        inFence = true;
+        fenceChar = ch;
+      } else if (ch === fenceChar) {
+        inFence = false;
+        fenceChar = "";
+      }
+      out.push(line);
+      continue;
+    }
+    if (!inFence && isDashRule(line)) {
+      const prev = out.length ? out[out.length - 1] : "";
+      if (prev.trim() !== "") out.push("");
+    }
+    out.push(line);
+  }
+  return out.join("\n");
 }
 
-function sanitizeUrl(url) {
-  const trimmed = (url || "").trim();
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
-  return "#";
-}
+marked.use({ hooks: { preprocess: ensureSeparatorBreaks } });
+
+DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+  if (node.tagName !== "A") return;
+  const href = node.getAttribute("href") || "";
+  if (/^https?:\/\//i.test(href)) {
+    node.setAttribute("target", "_blank");
+    node.setAttribute("rel", "noopener noreferrer");
+  }
+});
 
 function renderMarkdown(md = "") {
-  let source = escapeHtml(md);
-
-  source = source.replace(/```([\w-]*)\n([\s\S]*?)```/g, (_, lang, code) => {
-    const cls = lang ? ` class="language-${lang}"` : "";
-    return `<pre><code${cls}>${code}</code></pre>`;
-  });
-
-  source = source.replace(/^\s*---\s*$/gm, "<hr>");
-
-  source = source.replace(/^#### (.*)$/gm, "<h4>$1</h4>");
-  source = source.replace(/^### (.*)$/gm, "<h3>$1</h3>");
-  source = source.replace(/^## (.*)$/gm, "<h2>$1</h2>");
-  source = source.replace(/^# (.*)$/gm, "<h1>$1</h1>");
-
-  source = source.replace(/^> (.*)$/gm, "<blockquote>$1</blockquote>");
-
-  source = source.replace(/`([^`\n]+)`/g, "<code>$1</code>");
-  source = source.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  source = source.replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
-
-  source = source.replace(
-    /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
-    (_, text, url) =>
-      `<a href="${sanitizeUrl(url)}" target="_blank" rel="noopener noreferrer">${text}</a>`,
-  );
-
-  source = source.replace(/(?:^|\n)(- .+(?:\n- .+)*)/g, (match, listBlock) => {
-    const items = listBlock
-      .trim()
-      .split("\n")
-      .map((line) => line.replace(/^- /, "").trim())
-      .map((item) => `<li>${item}</li>`)
-      .join("");
-    return `\n<ul>${items}</ul>`;
-  });
-
-  source = source.replace(
-    /(?:^|\n)(\d+\. .+(?:\n\d+\. .+)*)/g,
-    (match, listBlock) => {
-      const items = listBlock
-        .trim()
-        .split("\n")
-        .map((line) => line.replace(/^\d+\. /, "").trim())
-        .map((item) => `<li>${item}</li>`)
-        .join("");
-      return `\n<ol>${items}</ol>`;
-    },
-  );
-
-  const blocks = source
-    .split(/\n{2,}/)
-    .map((block) => block.trim())
-    .filter(Boolean);
-
-  const html = blocks
-    .map((block) => {
-      if (
-        /^<(h1|h2|h3|h4|ul|ol|pre|blockquote|hr)/.test(block) ||
-        /^<li>/.test(block)
-      ) {
-        return block;
-      }
-      return `<p>${block.replace(/\n/g, "<br>")}</p>`;
-    })
-    .join("");
-
-  return html;
+  const rawHtml = marked.parse(md || "");
+  return DOMPurify.sanitize(rawHtml);
 }
 
 function createMessage(role, text = "", options = {}) {
@@ -620,9 +587,7 @@ async function streamSSE(res, onMessage) {
           const payload = JSON.parse(joined);
           onMessage(payload);
           scrollChatToBottom();
-        } catch {
-          //
-        }
+        } catch {}
       }
     }
 
@@ -637,9 +602,7 @@ async function streamSSE(res, onMessage) {
           const payload = JSON.parse(dataLines.join("\n"));
           onMessage(payload);
           scrollChatToBottom();
-        } catch {
-          //
-        }
+        } catch {}
       }
     }
   } finally {
