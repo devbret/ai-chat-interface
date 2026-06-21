@@ -15,6 +15,13 @@
         </div>
 
         <div class="toggles">
+          <label class="model-select">
+            Model
+            <select id="modelSelect" data-default="{{ model }}">
+              <option value="{{ model }}">{{ model }}</option>
+            </select>
+          </label>
+
           <label>
             <input id="streamToggle" type="checkbox" checked />
             Stream

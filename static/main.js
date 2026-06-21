@@ -4,6 +4,7 @@ const promptEl = document.getElementById("prompt");
 const sysEl = document.getElementById("system");
 const streamToggle = document.getElementById("streamToggle");
 const sysToggle = document.getElementById("sysToggle");
+const modelEl = document.getElementById("modelSelect");
 const tempEl = document.getElementById("temp");
 const numPredictEl = document.getElementById("numPredict");
 const numCtxEl = document.getElementById("numCtx");
@@ -189,6 +190,7 @@ function setStreamingUI(isStreaming) {
   sysEl.disabled = isStreaming;
   streamToggle.disabled = isStreaming;
   sysToggle.disabled = isStreaming;
+  modelEl.disabled = isStreaming;
   tempEl.disabled = isStreaming;
   numPredictEl.disabled = isStreaming;
   numCtxEl.disabled = isStreaming;
@@ -321,7 +323,7 @@ async function askSync(msgs, options) {
     const res = await fetch("/api/chat-sync", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: msgs, options }),
+      body: JSON.stringify({ messages: msgs, options, model: modelEl.value }),
     });
 
     if (!res.ok) {
@@ -368,7 +370,7 @@ async function askStream(msgs, options) {
     const res = await fetch("/api/chat-stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: msgs, options }),
+      body: JSON.stringify({ messages: msgs, options, model: modelEl.value }),
       signal: currentAbort.signal,
     });
 
@@ -428,6 +430,7 @@ async function analyzeFileSyncToChat(file, task, assistantMsg) {
   const form = new FormData();
   form.append("file", file);
   if (task) form.append("task", task);
+  if (modelEl.value) form.append("model", modelEl.value);
 
   try {
     const res = await fetch("/api/analyze-file", {
@@ -468,6 +471,7 @@ async function analyzeFileStreamToChat(file, task, assistantMsg) {
   const form = new FormData();
   form.append("file", file);
   if (task) form.append("task", task);
+  if (modelEl.value) form.append("model", modelEl.value);
 
   let chunkText = "";
   let finalText = "";
@@ -626,6 +630,30 @@ async function safeReadError(res) {
   }
 }
 
+async function loadModels() {
+  const fallback = modelEl.dataset.default || "";
+  try {
+    const res = await fetch("/api/models");
+    if (!res.ok) return;
+    const data = await res.json();
+    const names = (data.models || [])
+      .map((m) => m.name || m.model)
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b));
+    if (!names.length) return;
+
+    const selected = names.includes(fallback) ? fallback : names[0];
+    modelEl.innerHTML = "";
+    for (const name of names) {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      if (name === selected) opt.selected = true;
+      modelEl.appendChild(opt);
+    }
+  } catch {}
+}
+
 function autoResizeTextarea() {
   promptEl.style.height = "auto";
   promptEl.style.height = Math.min(promptEl.scrollHeight, 240) + "px";
@@ -639,3 +667,5 @@ promptEl.addEventListener("keydown", (e) => {
     composer.requestSubmit();
   }
 });
+
+loadModels();
