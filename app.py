@@ -62,7 +62,7 @@ def _chunk_text(text: str, max_chars: int = 6000) -> List[str]:
         start = cut
     return [c for c in chunks if c]
 
-def _summarize_chunk(chunk: str, extra_instruction: str = "") -> str:
+def _summarize_chunk(chunk: str, extra_instruction: str = "", model=None) -> str:
     sys = "You are a precise summarizer. Extract the key ideas succinctly."
     if extra_instruction:
         sys += " " + extra_instruction.strip()
@@ -72,12 +72,13 @@ def _summarize_chunk(chunk: str, extra_instruction: str = "") -> str:
             {"role": "user", "content": f"Summarize the following text:\n\n{chunk}"}
         ],
         stream=False,
-        options={"temperature": 0.2, "num_ctx": 8192, "num_predict": 512}
+        options={"temperature": 0.2, "num_ctx": 8192, "num_predict": 512},
+        model=model
     )
     r.raise_for_status()
     return r.json().get("message", {}).get("content", "").strip()
 
-def _final_synthesis(summaries: List[str], user_task: str = "Provide a concise overall summary with key themes, insights, and any notable entities/dates.") -> str:
+def _final_synthesis(summaries: List[str], user_task: str = "Provide a concise overall summary with key themes, insights, and any notable entities/dates.", model=None) -> str:
     joined = "\n\n---\n\n".join(summaries)
     r = _ollama_chat(
         [
@@ -85,7 +86,8 @@ def _final_synthesis(summaries: List[str], user_task: str = "Provide a concise o
             {"role": "user", "content": f"{user_task}\n\nHere are section summaries:\n\n{joined}"}
         ],
         stream=False,
-        options={"temperature": 0.2, "num_ctx": 8192, "num_predict": 700}
+        options={"temperature": 0.2, "num_ctx": 8192, "num_predict": 700},
+        model=model
     )
     r.raise_for_status()
     return r.json().get("message", {}).get("content", "").strip()
@@ -151,6 +153,7 @@ def analyze_file_sync():
         abort(400, description="Missing file.")
     f = request.files["file"]
     task = request.form.get("task", "").strip()
+    model = request.form.get("model") or None
 
     text = _read_txt_from_upload(f)
     chunks = _chunk_text(text, max_chars=6000)
@@ -162,14 +165,15 @@ def analyze_file_sync():
             [{"role": "system", "content": sys},
              {"role": "user", "content": prompt}],
             stream=False,
-            options={"temperature": 0.2, "num_ctx": 8192, "num_predict": 700}
+            options={"temperature": 0.2, "num_ctx": 8192, "num_predict": 700},
+            model=model
         )
         r.raise_for_status()
         out = r.json().get("message", {}).get("content", "").strip()
         return jsonify({"result": out, "chunks": 1})
 
-    summaries = [_summarize_chunk(c, extra_instruction=task) for c in chunks]
-    final = _final_synthesis(summaries, user_task=task or "Provide a concise overall summary with key themes, insights, and notable entities/dates.")
+    summaries = [_summarize_chunk(c, extra_instruction=task, model=model) for c in chunks]
+    final = _final_synthesis(summaries, user_task=task or "Provide a concise overall summary with key themes, insights, and notable entities/dates.", model=model)
     return jsonify({"result": final, "chunks": len(chunks)})
 
 @app.post("/api/analyze-file-stream")
@@ -178,6 +182,7 @@ def analyze_file_stream():
         abort(400, description="Missing file.")
     f = request.files["file"]
     task = request.form.get("task", "").strip()
+    model = request.form.get("model") or None
     text = _read_txt_from_upload(f)
     chunks = _chunk_text(text, max_chars=6000)
 
@@ -189,7 +194,8 @@ def analyze_file_stream():
                 [{"role": "system", "content": sys},
                  {"role": "user", "content": prompt}],
                 stream=True,
-                options={"temperature": 0.2, "num_ctx": 8192, "num_predict": 700}
+                options={"temperature": 0.2, "num_ctx": 8192, "num_predict": 700},
+                model=model
             ) as r:
                 r.raise_for_status()
                 assembled = []
@@ -210,10 +216,10 @@ def analyze_file_stream():
         summaries = []
         N = len(chunks)
         for i, c in enumerate(chunks, start=1):
-            s = _summarize_chunk(c, extra_instruction=task)
+            s = _summarize_chunk(c, extra_instruction=task, model=model)
             summaries.append(s)
             yield f"data: {json.dumps({'stage':'chunk','index':i,'of':N,'summary':s})}\n\n"
-        final = _final_synthesis(summaries, user_task=task or "Provide a concise overall summary with key themes, insights, and notable entities/dates.")
+        final = _final_synthesis(summaries, user_task=task or "Provide a concise overall summary with key themes, insights, and notable entities/dates.", model=model)
         yield f"data: {json.dumps({'stage':'final','text':final})}\n\n"
         yield "data: {\"done\": true}\n\n"
 

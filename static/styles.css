@@ -87,6 +87,22 @@ header .toggles label {
   gap: 6px;
 }
 
+#modelSelect {
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #0f141f;
+  color: var(--fg);
+  font: inherit;
+  max-width: 240px;
+  cursor: pointer;
+}
+
+#modelSelect:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
 #chat {
   background: linear-gradient(180deg, #151821 0%, #121720 100%);
   border: 1px solid var(--border);
