@@ -11,9 +11,12 @@ const numCtxEl = document.getElementById("numCtx");
 
 const attachBtn = document.getElementById("attachBtn");
 const fileInput = document.getElementById("fileInput");
+const attachVideoBtn = document.getElementById("attachVideoBtn");
+const videoInput = document.getElementById("videoInput");
 const fileBadge = document.getElementById("fileBadge");
 const clearFileBtn = document.getElementById("clearFileBtn");
 const taskInput = document.getElementById("taskInput");
+const framesInput = document.getElementById("framesInput");
 const fileStreamToggle = document.getElementById("fileStreamToggle");
 
 const sendBtn = document.getElementById("sendBtn");
@@ -174,9 +177,10 @@ function appendAssistantMessageToHistory(content) {
 }
 
 function getGenOptions() {
+  const numPredict = parseInt(numPredictEl.value, 10);
   return {
     temperature: parseFloat(tempEl.value || "0.2"),
-    num_predict: parseInt(numPredictEl.value || "512", 10),
+    num_predict: Number.isNaN(numPredict) ? -1 : numPredict,
     num_ctx: parseInt(numCtxEl.value || "8192", 10),
   };
 }
@@ -197,7 +201,10 @@ function setStreamingUI(isStreaming) {
 
   attachBtn.disabled = isStreaming;
   fileInput.disabled = isStreaming;
+  attachVideoBtn.disabled = isStreaming;
+  videoInput.disabled = isStreaming;
   taskInput.disabled = isStreaming;
+  framesInput.disabled = isStreaming;
   fileStreamToggle.disabled = isStreaming;
   clearFileBtn.disabled = isStreaming;
 }
@@ -207,13 +214,23 @@ stopBtn.addEventListener("click", () => {
 });
 
 attachBtn.addEventListener("click", () => fileInput.click());
+attachVideoBtn.addEventListener("click", () => videoInput.click());
 
 fileInput.addEventListener("change", () => {
   const f = fileInput.files?.[0];
   if (f) {
-    fileBadge.hidden = false;
-    fileBadge.textContent = f.name;
-    clearFileBtn.hidden = false;
+    videoInput.value = "";
+    showFileBadge(f.name);
+  } else {
+    clearFileBadge();
+  }
+});
+
+videoInput.addEventListener("change", () => {
+  const f = videoInput.files?.[0];
+  if (f) {
+    fileInput.value = "";
+    showFileBadge(f.name);
   } else {
     clearFileBadge();
   }
@@ -221,8 +238,23 @@ fileInput.addEventListener("change", () => {
 
 clearFileBtn.addEventListener("click", () => {
   fileInput.value = "";
+  videoInput.value = "";
   clearFileBadge();
 });
+
+function getSelectedUpload() {
+  const video = videoInput.files?.[0];
+  if (video) return { file: video, kind: "video" };
+  const txt = fileInput.files?.[0];
+  if (txt) return { file: txt, kind: "txt" };
+  return null;
+}
+
+function showFileBadge(name) {
+  fileBadge.hidden = false;
+  fileBadge.textContent = name;
+  clearFileBtn.hidden = false;
+}
 
 function clearFileBadge() {
   fileBadge.hidden = true;
@@ -233,20 +265,25 @@ function clearFileBadge() {
 composer.addEventListener("submit", async (e) => {
   e.preventDefault();
 
-  const f = fileInput.files?.[0];
-  if (f) {
-    const task = taskInput.value.trim();
+  const selected = getSelectedUpload();
+  if (selected) {
+    const { file: f, kind } = selected;
+    const isVideo = kind === "video";
+    const label = isVideo ? "video" : "file";
+    const task = [promptEl.value.trim(), taskInput.value.trim()]
+      .filter(Boolean)
+      .join("\n\n");
     const announce = task
       ? `Analyze: ${f.name} — ${task}`
       : `Analyze: ${f.name}`;
 
     createMessage("user", announce, {
-      tag: "file",
+      tag: label,
       markdown: false,
     });
 
     const assistantMsg = createMessage("assistant", "", {
-      tag: fileStreamToggle.checked ? "file • stream" : "file • sync",
+      tag: `${label} • ${fileStreamToggle.checked ? "stream" : "sync"}`,
       state: "pending",
       markdown: false,
     });
@@ -254,7 +291,13 @@ composer.addEventListener("submit", async (e) => {
     addTypingIndicator(assistantMsg.bubble);
 
     try {
-      if (fileStreamToggle.checked) {
+      if (isVideo) {
+        if (fileStreamToggle.checked) {
+          await analyzeVideoStreamToChat(f, task, assistantMsg);
+        } else {
+          await analyzeVideoSyncToChat(f, task, assistantMsg);
+        }
+      } else if (fileStreamToggle.checked) {
         await analyzeFileStreamToChat(f, task, assistantMsg);
       } else {
         await analyzeFileSyncToChat(f, task, assistantMsg);
@@ -264,11 +307,14 @@ composer.addEventListener("submit", async (e) => {
       setBubbleContent(assistantMsg.bubble, `Error: ${err?.message || err}`, {
         markdown: false,
       });
-      setMessageTag(assistantMsg, "file • error");
+      setMessageTag(assistantMsg, `${label} • error`);
     } finally {
       fileInput.value = "";
+      videoInput.value = "";
       clearFileBadge();
       taskInput.value = "";
+      promptEl.value = "";
+      autoResizeTextarea();
       promptEl.focus();
     }
 
@@ -540,6 +586,122 @@ async function analyzeFileStreamToChat(file, task, assistantMsg) {
         { markdown: !!fallback },
       );
       setMessageTag(assistantMsg, "file • stream • error");
+    }
+  } finally {
+    setStreamingUI(false);
+    currentAbort = null;
+  }
+}
+
+async function analyzeVideoSyncToChat(file, task, assistantMsg) {
+  setBubbleState(assistantMsg.bubble, "pending");
+  setBubbleContent(assistantMsg.bubble, "Extracting frames and analyzing…", {
+    markdown: false,
+  });
+
+  const form = new FormData();
+  form.append("file", file);
+  if (task) form.append("task", task);
+  if (modelEl.value) form.append("model", modelEl.value);
+  form.append("frames", framesInput.value || "8");
+
+  try {
+    const res = await fetch("/api/analyze-video", {
+      method: "POST",
+      body: form,
+    });
+
+    if (!res.ok) {
+      const errText = await safeReadError(res);
+      setBubbleState(assistantMsg.bubble, "error");
+      setBubbleContent(assistantMsg.bubble, `Error ${res.status}: ${errText}`, {
+        markdown: false,
+      });
+      setMessageTag(assistantMsg, "video • sync • error");
+      return;
+    }
+
+    const j = await res.json();
+    const result = j.result || "";
+
+    setBubbleState(assistantMsg.bubble, "done");
+    setBubbleContent(assistantMsg.bubble, result, { markdown: true });
+    setMessageTag(assistantMsg, `video • sync • ${j.frames || 0} frames`);
+    appendAssistantMessageToHistory(result);
+  } catch (e) {
+    setBubbleState(assistantMsg.bubble, "error");
+    setBubbleContent(assistantMsg.bubble, `Error: ${e?.message || e}`, {
+      markdown: false,
+    });
+    setMessageTag(assistantMsg, "video • sync • error");
+  }
+}
+
+async function analyzeVideoStreamToChat(file, task, assistantMsg) {
+  setStreamingUI(true);
+  currentAbort = new AbortController();
+
+  const form = new FormData();
+  form.append("file", file);
+  if (task) form.append("task", task);
+  if (modelEl.value) form.append("model", modelEl.value);
+  form.append("frames", framesInput.value || "8");
+
+  let accumulated = "";
+  let frameCount = 0;
+
+  try {
+    setBubbleContent(assistantMsg.bubble, "Extracting frames…", {
+      markdown: false,
+    });
+
+    const res = await fetch("/api/analyze-video-stream", {
+      method: "POST",
+      body: form,
+      signal: currentAbort.signal,
+    });
+
+    if (!res.ok || !res.body) {
+      const errText = await safeReadError(res);
+      setBubbleState(assistantMsg.bubble, "error");
+      setBubbleContent(
+        assistantMsg.bubble,
+        `Error ${res.status || ""}: ${errText || "Request failed"}`,
+        { markdown: false },
+      );
+      setMessageTag(assistantMsg, "video • stream • error");
+      return;
+    }
+
+    await streamSSE(res, (payload) => {
+      if (payload.done) {
+        setBubbleState(assistantMsg.bubble, "done");
+        setBubbleContent(assistantMsg.bubble, accumulated, { markdown: true });
+        setMessageTag(assistantMsg, `video • stream • ${frameCount} frames`);
+        appendAssistantMessageToHistory(accumulated);
+      } else if (payload.stage === "frames") {
+        frameCount = payload.frames || 0;
+        addTypingIndicator(assistantMsg.bubble);
+      } else if (payload.delta) {
+        accumulated += payload.delta;
+        setBubbleContent(assistantMsg.bubble, accumulated, { markdown: true });
+      }
+    });
+  } catch (e) {
+    if (e?.name === "AbortError") {
+      setBubbleState(assistantMsg.bubble, "canceled");
+      setBubbleContent(assistantMsg.bubble, accumulated || "Canceled.", {
+        markdown: !!accumulated,
+      });
+      setMessageTag(assistantMsg, "video • stream • canceled");
+    } else {
+      setBubbleState(assistantMsg.bubble, "error");
+      setBubbleContent(
+        assistantMsg.bubble,
+        accumulated || `Error: ${e?.message || e}`,
+        { markdown: !!accumulated },
+      );
+      setMessageTag(assistantMsg, "video • stream • error");
     }
   } finally {
     setStreamingUI(false);

@@ -1,4 +1,4 @@
-import os, json
+import os, json, base64, shutil, tempfile, subprocess
 from typing import List
 from flask import Flask, request, render_template, jsonify, Response, stream_with_context, abort
 import requests
@@ -24,11 +24,15 @@ def _int_env(name: str, default: int) -> int:
 OLLAMA_BASE_URL = _require_env("OLLAMA_BASE_URL")
 OLLAMA_MODEL    = _require_env("OLLAMA_MODEL")
 
-MAX_UPLOAD_MB   = _int_env("MAX_UPLOAD_MB", 10)
+MAX_UPLOAD_MB        = _int_env("MAX_UPLOAD_MB", 10)
+MAX_VIDEO_UPLOAD_MB  = _int_env("MAX_VIDEO_UPLOAD_MB", 50)
+VIDEO_FRAMES         = _int_env("VIDEO_FRAMES", 8)
+VIDEO_FRAME_WIDTH    = _int_env("VIDEO_FRAME_WIDTH", 768)
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_MB * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = max(MAX_UPLOAD_MB, MAX_VIDEO_UPLOAD_MB) * 1024 * 1024
 ALLOWED_EXTS = {".txt"}
+VIDEO_EXTS   = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"}
 
 def _ollama_chat(messages, stream=False, options=None, model=None):
     payload = {
@@ -48,6 +52,81 @@ def _read_txt_from_upload(file_storage):
         return data.decode("utf-8", errors="replace")
     except Exception:
         abort(400, description="Could not decode file as UTF-8 text.")
+
+def _probe_duration(path: str) -> float:
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, timeout=30
+        )
+        return float(out.stdout.strip())
+    except Exception:
+        return 0.0
+
+def _extract_video_frames(file_storage, num_frames: int = VIDEO_FRAMES,
+                          width: int = VIDEO_FRAME_WIDTH) -> List[str]:
+    """Sample `num_frames` evenly spaced frames from an uploaded video and
+    return them as base64-encoded JPEGs (chronological order)."""
+    name = (file_storage.filename or "").lower()
+    ext = os.path.splitext(name)[1]
+    if ext not in VIDEO_EXTS:
+        abort(400, description="Unsupported video type. Allowed: " + ", ".join(sorted(VIDEO_EXTS)))
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        abort(500, description="ffmpeg/ffprobe are required for video analysis but were not found on the server.")
+
+    tmpdir = tempfile.mkdtemp(prefix="vid_")
+    frames: List[str] = []
+    try:
+        in_path = os.path.join(tmpdir, "input" + ext)
+        file_storage.save(in_path)
+
+        duration = _probe_duration(in_path)
+        if duration and duration > 0:
+            timestamps = [duration * (i + 0.5) / num_frames for i in range(num_frames)]
+        else:
+            timestamps = [0.0]
+
+        for idx, ts in enumerate(timestamps):
+            out_path = os.path.join(tmpdir, f"frame_{idx:03d}.jpg")
+            cmd = ["ffmpeg", "-nostdin", "-loglevel", "error", "-ss", f"{ts:.3f}",
+                   "-i", in_path, "-frames:v", "1",
+                   "-vf", f"scale='min({width},iw)':-2", "-q:v", "3", out_path]
+            try:
+                subprocess.run(cmd, capture_output=True, timeout=60, check=False)
+            except Exception:
+                continue
+            if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+                with open(out_path, "rb") as fh:
+                    frames.append(base64.b64encode(fh.read()).decode("ascii"))
+
+        if not frames:
+            abort(400, description="Could not extract any frames from the video.")
+        return frames
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+def _video_messages(frames: List[str], task: str = "") -> List[dict]:
+    sys = ("You are a careful video analyst. You are given a sequence of still frames "
+           "sampled in chronological order from a short video. Reason about what happens "
+           "across the clip — describe the setting, key objects, people, actions, any visible "
+           "text, and how things change from frame to frame. Present one coherent account of "
+           "the video rather than describing each frame in isolation.")
+    user_text = task.strip() if task else "Describe what is happening in this video."
+    user_text += (f"\n\n(The {len(frames)} attached images are frames sampled evenly "
+                  "from the video, in chronological order.)")
+    return [
+        {"role": "system", "content": sys},
+        {"role": "user", "content": user_text, "images": frames},
+    ]
+
+def _resolve_frame_count(raw) -> int:
+    if not raw:
+        return VIDEO_FRAMES
+    try:
+        return max(1, min(32, int(raw)))
+    except (TypeError, ValueError):
+        return VIDEO_FRAMES
 
 def _chunk_text(text: str, max_chars: int = 6000) -> List[str]:
     chunks = []
@@ -72,7 +151,7 @@ def _summarize_chunk(chunk: str, extra_instruction: str = "", model=None) -> str
             {"role": "user", "content": f"Summarize the following text:\n\n{chunk}"}
         ],
         stream=False,
-        options={"temperature": 0.2, "num_ctx": 8192, "num_predict": 512},
+        options={"temperature": 0.2, "num_ctx": 32768, "num_predict": 512},
         model=model
     )
     r.raise_for_status()
@@ -86,7 +165,7 @@ def _final_synthesis(summaries: List[str], user_task: str = "Provide a concise o
             {"role": "user", "content": f"{user_task}\n\nHere are section summaries:\n\n{joined}"}
         ],
         stream=False,
-        options={"temperature": 0.2, "num_ctx": 8192, "num_predict": 700},
+        options={"temperature": 0.2, "num_ctx": 32768, "num_predict": -1},
         model=model
     )
     r.raise_for_status()
@@ -165,7 +244,7 @@ def analyze_file_sync():
             [{"role": "system", "content": sys},
              {"role": "user", "content": prompt}],
             stream=False,
-            options={"temperature": 0.2, "num_ctx": 8192, "num_predict": 700},
+            options={"temperature": 0.2, "num_ctx": 32768, "num_predict": -1},
             model=model
         )
         r.raise_for_status()
@@ -194,7 +273,7 @@ def analyze_file_stream():
                 [{"role": "system", "content": sys},
                  {"role": "user", "content": prompt}],
                 stream=True,
-                options={"temperature": 0.2, "num_ctx": 8192, "num_predict": 700},
+                options={"temperature": 0.2, "num_ctx": 32768, "num_predict": -1},
                 model=model
             ) as r:
                 r.raise_for_status()
@@ -222,6 +301,63 @@ def analyze_file_stream():
         final = _final_synthesis(summaries, user_task=task or "Provide a concise overall summary with key themes, insights, and notable entities/dates.", model=model)
         yield f"data: {json.dumps({'stage':'final','text':final})}\n\n"
         yield "data: {\"done\": true}\n\n"
+
+    headers = {"Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive"}
+    return Response(stream_with_context(run()), headers=headers)
+
+@app.post("/api/analyze-video")
+def analyze_video_sync():
+    if "file" not in request.files:
+        abort(400, description="Missing file.")
+    f = request.files["file"]
+    task  = request.form.get("task", "").strip()
+    model = request.form.get("model") or None
+    num_frames = _resolve_frame_count(request.form.get("frames"))
+
+    frames = _extract_video_frames(f, num_frames=num_frames)
+    r = _ollama_chat(
+        _video_messages(frames, task),
+        stream=False,
+        options={"temperature": 0.2, "num_ctx": 32768, "num_predict": -1},
+        model=model
+    )
+    r.raise_for_status()
+    out = r.json().get("message", {}).get("content", "").strip()
+    return jsonify({"result": out, "frames": len(frames)})
+
+@app.post("/api/analyze-video-stream")
+def analyze_video_stream():
+    if "file" not in request.files:
+        abort(400, description="Missing file.")
+    f = request.files["file"]
+    task  = request.form.get("task", "").strip()
+    model = request.form.get("model") or None
+    num_frames = _resolve_frame_count(request.form.get("frames"))
+
+    frames = _extract_video_frames(f, num_frames=num_frames)
+    messages = _video_messages(frames, task)
+
+    def run():
+        yield f"data: {json.dumps({'stage':'frames','frames':len(frames)})}\n\n"
+        with _ollama_chat(
+            messages,
+            stream=True,
+            options={"temperature": 0.2, "num_ctx": 32768, "num_predict": -1},
+            model=model
+        ) as r:
+            r.raise_for_status()
+            for line in r.iter_lines():
+                if not line:
+                    continue
+                try:
+                    j = json.loads(line.decode("utf-8"))
+                except Exception:
+                    continue
+                if "message" in j and "content" in j["message"]:
+                    yield f"data: {json.dumps({'delta': j['message']['content']})}\n\n"
+                if j.get("done"):
+                    yield "data: {\"done\": true}\n\n"
+                    return
 
     headers = {"Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive"}
     return Response(stream_with_context(run()), headers=headers)

@@ -314,6 +314,18 @@ header .toggles label {
   align-items: center;
 }
 
+.file-tools label.nowrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#framesInput {
+  flex: 0 0 auto;
+  width: 64px;
+  min-width: 64px;
+}
+
 .file-badge {
   padding: 0.2rem 0.6rem;
   border-radius: 999px;
