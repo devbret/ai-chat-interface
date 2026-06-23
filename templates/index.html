@@ -53,6 +53,13 @@
         <div class="row file-tools">
           <button id="attachBtn" type="button">Attach .txt</button>
           <input id="fileInput" type="file" accept=".txt" hidden />
+          <button id="attachVideoBtn" type="button">Attach video</button>
+          <input
+            id="videoInput"
+            type="file"
+            accept="video/mp4,video/quicktime,video/webm,video/x-matroska,video/x-msvideo,.mp4,.mov,.webm,.mkv,.avi,.m4v"
+            hidden
+          />
           <span id="fileBadge" class="file-badge" hidden></span>
           <button id="clearFileBtn" type="button" class="link danger" hidden>
             Remove
@@ -64,6 +71,11 @@
             placeholder="Task (optional, e.g., Extract entities & dates)"
             aria-label="File analysis task"
           />
+
+          <label class="nowrap">
+            Frames
+            <input id="framesInput" type="number" min="1" max="32" value="8" />
+          </label>
 
           <label class="nowrap">
             <input id="fileStreamToggle" type="checkbox" checked />
@@ -88,9 +100,9 @@
             <input
               id="numPredict"
               type="number"
-              min="64"
-              max="4096"
-              value="512"
+              min="-1"
+              max="32768"
+              value="-1"
             />
           </label>
 
