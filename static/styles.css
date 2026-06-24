@@ -1,27 +1,118 @@
 :root {
   --bg: #0f1115;
+  --bg-grad-top: #0d1015;
+  --bg-grad-bottom: #11151b;
   --panel: #151821;
   --panel-2: #11151d;
+  --chat-grad-top: #151821;
+  --chat-grad-bottom: #121720;
+  --input-bg: #0f141f;
   --fg: #e6e6e6;
   --muted: #9aa1ac;
   --muted-2: #7f8794;
   --border: #2a3242;
+  --border-strong: #3b4559;
 
   --blue: #4da3ff;
   --blue-dark: #1b2636;
   --user-bg: #243047;
+  --user-border: #314463;
+  --assistant-border: #2c3a53;
+  --btn-fg: #08111d;
 
   --green: #33d17a;
   --green-bg: #13271d;
 
   --yellow: #f5c451;
   --yellow-bg: #2b2412;
+  --yellow-border: #5a4a1d;
 
   --red: #ff6b6b;
   --red-bg: #2c1518;
+  --red-border: #6f2a30;
+
+  --system-bg: #2a2237;
+  --system-border: #43335d;
+  --status-bg: #1a202b;
+  --status-border: #2b3445;
+  --canceled-bg: #26202a;
+  --canceled-border: #45384e;
+
+  --code-bg: rgba(255, 255, 255, 0.07);
+  --code-border: rgba(255, 255, 255, 0.08);
+  --pre-bg: #0c1119;
+  --pre-border: #2b3344;
+  --blockquote-border: #52627f;
+  --blockquote-fg: #c8d0db;
+  --link-fg: #8dc1ff;
+  --hr: #344056;
+  --th-bg: rgba(255, 255, 255, 0.05);
+  --tr-even-bg: rgba(255, 255, 255, 0.02);
+  --tag-bg: rgba(255, 255, 255, 0.03);
+  --danger-fg: #ff9b9b;
+  --busy-border: #4b5f85;
+  --busy-glow: rgba(77, 163, 255, 0.15);
 
   --shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
   --radius: 14px;
+}
+
+:root[data-theme="light"] {
+  --bg: #f5f6f8;
+  --bg-grad-top: #f8f9fb;
+  --bg-grad-bottom: #eef0f4;
+  --panel: #ffffff;
+  --panel-2: #f3f4f7;
+  --chat-grad-top: #ffffff;
+  --chat-grad-bottom: #f7f8fb;
+  --input-bg: #ffffff;
+  --fg: #1a1d23;
+  --muted: #5b6473;
+  --muted-2: #7a828f;
+  --border: #d8dce3;
+  --border-strong: #c0c6d0;
+
+  --blue: #2f7fe0;
+  --blue-dark: #e8f1fd;
+  --user-bg: #dce7f8;
+  --user-border: #b9cdf0;
+  --assistant-border: #cfe0f6;
+  --btn-fg: #ffffff;
+
+  --green: #1f9d57;
+  --green-bg: #e3f6ea;
+
+  --yellow: #b9831a;
+  --yellow-bg: #fbf2da;
+  --yellow-border: #e6cf94;
+
+  --red: #d4424a;
+  --red-bg: #fbe6e7;
+  --red-border: #efbcbf;
+
+  --system-bg: #f0eafa;
+  --system-border: #d6c7f0;
+  --status-bg: #eef1f5;
+  --status-border: #d3d9e2;
+  --canceled-bg: #f0ecf2;
+  --canceled-border: #ddd2e6;
+
+  --code-bg: rgba(0, 0, 0, 0.05);
+  --code-border: rgba(0, 0, 0, 0.08);
+  --pre-bg: #f2f4f8;
+  --pre-border: #d8dce3;
+  --blockquote-border: #b6c0d0;
+  --blockquote-fg: #4a5260;
+  --link-fg: #1f6fd0;
+  --hr: #dde1e8;
+  --th-bg: rgba(0, 0, 0, 0.04);
+  --tr-even-bg: rgba(0, 0, 0, 0.02);
+  --tag-bg: rgba(0, 0, 0, 0.03);
+  --danger-fg: #c43d3d;
+  --busy-border: #8fb4ee;
+  --busy-glow: rgba(47, 127, 224, 0.18);
+
+  --shadow: 0 10px 24px rgba(15, 23, 42, 0.1);
 }
 
 * {
@@ -42,7 +133,11 @@ body {
     Roboto,
     Ubuntu,
     sans-serif;
-  background: linear-gradient(180deg, #0d1015 0%, #11151b 100%);
+  background: linear-gradient(
+    180deg,
+    var(--bg-grad-top) 0%,
+    var(--bg-grad-bottom) 100%
+  );
   color: var(--fg);
 }
 
@@ -75,6 +170,7 @@ header {
 header .toggles {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
   gap: 12px;
 }
@@ -87,11 +183,34 @@ header .toggles label {
   gap: 6px;
 }
 
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.theme-toggle:hover {
+  border-color: var(--border-strong);
+}
+
+.theme-toggle .theme-toggle-icon {
+  font-size: 15px;
+  line-height: 1;
+}
+
 #modelSelect {
   padding: 6px 8px;
   border-radius: 8px;
   border: 1px solid var(--border);
-  background: #0f141f;
+  background: var(--input-bg);
   color: var(--fg);
   font: inherit;
   max-width: 240px;
@@ -104,7 +223,11 @@ header .toggles label {
 }
 
 #chat {
-  background: linear-gradient(180deg, #151821 0%, #121720 100%);
+  background: linear-gradient(
+    180deg,
+    var(--chat-grad-top) 0%,
+    var(--chat-grad-bottom) 100%
+  );
   border: 1px solid var(--border);
   border-radius: 16px;
   padding: 16px;
@@ -153,7 +276,7 @@ header .toggles label {
   padding: 2px 8px;
   border-radius: 999px;
   border: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--tag-bg);
   color: var(--muted);
 }
 
@@ -171,39 +294,39 @@ header .toggles label {
 .bubble.user {
   align-self: flex-end;
   background: var(--user-bg);
-  border-color: #314463;
+  border-color: var(--user-border);
 }
 
 .bubble.assistant {
   align-self: flex-start;
   background: var(--blue-dark);
-  border-color: #2c3a53;
+  border-color: var(--assistant-border);
 }
 
 .bubble.system {
-  background: #2a2237;
-  border-color: #43335d;
+  background: var(--system-bg);
+  border-color: var(--system-border);
 }
 
 .bubble.status {
-  background: #1a202b;
-  border-color: #2b3445;
+  background: var(--status-bg);
+  border-color: var(--status-border);
   color: var(--muted);
 }
 
 .bubble.pending {
   background: var(--yellow-bg);
-  border-color: #5a4a1d;
+  border-color: var(--yellow-border);
 }
 
 .bubble.error {
   background: var(--red-bg);
-  border-color: #6f2a30;
+  border-color: var(--red-border);
 }
 
 .bubble.canceled {
-  background: #26202a;
-  border-color: #45384e;
+  background: var(--canceled-bg);
+  border-color: var(--canceled-border);
 }
 
 .bubble.done {
@@ -261,7 +384,7 @@ header .toggles label {
   padding: 12px;
   border-radius: 12px;
   border: 1px solid var(--border);
-  background: #0f141f;
+  background: var(--input-bg);
   color: var(--fg);
   resize: vertical;
 }
@@ -283,7 +406,7 @@ header .toggles label {
   padding: 10px;
   border-radius: 10px;
   border: 1px solid var(--border);
-  background: #0f141f;
+  background: var(--input-bg);
   color: var(--fg);
   min-width: 120px;
 }
@@ -293,7 +416,7 @@ header .toggles label {
   border-radius: 10px;
   border: 1px solid transparent;
   background: var(--blue);
-  color: #08111d;
+  color: var(--btn-fg);
   font-weight: 700;
   cursor: pointer;
 }
@@ -329,7 +452,7 @@ header .toggles label {
 .file-badge {
   padding: 0.2rem 0.6rem;
   border-radius: 999px;
-  background: #243047;
+  background: var(--user-bg);
   color: var(--fg);
   border: 1px solid var(--border);
   font-size: 0.9rem;
@@ -343,11 +466,11 @@ header .toggles label {
 
 .link:hover {
   color: var(--fg) !important;
-  border-color: #3b4559 !important;
+  border-color: var(--border-strong) !important;
 }
 
 .link.danger {
-  color: #ff9b9b !important;
+  color: var(--danger-fg) !important;
 }
 
 .nowrap {
@@ -361,8 +484,8 @@ header .toggles label {
 }
 
 .busy #prompt {
-  border-color: #4b5f85;
-  box-shadow: 0 0 0 1px rgba(77, 163, 255, 0.15);
+  border-color: var(--busy-border);
+  box-shadow: 0 0 0 1px var(--busy-glow);
 }
 
 .md {
@@ -416,16 +539,16 @@ header .toggles label {
 
 .md code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  background: rgba(255, 255, 255, 0.07);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
   border-radius: 6px;
   padding: 0.1em 0.35em;
   font-size: 0.95em;
 }
 
 .md pre {
-  background: #0c1119;
-  border: 1px solid #2b3344;
+  background: var(--pre-bg);
+  border: 1px solid var(--pre-border);
   border-radius: 10px;
   padding: 12px;
   overflow: auto;
@@ -441,20 +564,20 @@ header .toggles label {
 }
 
 .md blockquote {
-  border-left: 3px solid #52627f;
+  border-left: 3px solid var(--blockquote-border);
   padding-left: 12px;
-  color: #c8d0db;
+  color: var(--blockquote-fg);
 }
 
 .md a {
-  color: #8dc1ff;
+  color: var(--link-fg);
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
 .md hr {
   border: none;
-  border-top: 1px solid #344056;
+  border-top: 1px solid var(--hr);
   margin: 1rem 0;
 }
 
@@ -476,12 +599,12 @@ header .toggles label {
 }
 
 .md thead th {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--th-bg);
   font-weight: 700;
 }
 
 .md tbody tr:nth-child(even) {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--tr-even-bg);
 }
 
 .md sup a[data-footnote-ref] {
@@ -493,7 +616,7 @@ header .toggles label {
 .md .footnotes {
   margin-top: 1.25rem;
   padding-top: 0.5rem;
-  border-top: 1px solid #344056;
+  border-top: 1px solid var(--hr);
   font-size: 0.88em;
   color: var(--muted);
 }

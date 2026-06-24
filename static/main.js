@@ -22,8 +22,34 @@ const fileStreamToggle = document.getElementById("fileStreamToggle");
 const sendBtn = document.getElementById("sendBtn");
 const stopBtn = document.getElementById("stopBtn");
 
+const themeToggle = document.getElementById("themeToggle");
+
 let messages = [];
 let currentAbort = null;
+
+function applyTheme(theme) {
+  const isLight = theme === "light";
+  document.documentElement.setAttribute("data-theme", isLight ? "light" : "dark");
+
+  const icon = themeToggle.querySelector(".theme-toggle-icon");
+  const label = themeToggle.querySelector(".theme-toggle-label");
+  if (icon) icon.textContent = isLight ? "☀️" : "🌙";
+  if (label) label.textContent = isLight ? "Light" : "Dark";
+  themeToggle.setAttribute("aria-pressed", String(isLight));
+}
+
+applyTheme(document.documentElement.getAttribute("data-theme") || "dark");
+
+themeToggle.addEventListener("click", () => {
+  const next =
+    document.documentElement.getAttribute("data-theme") === "light"
+      ? "dark"
+      : "light";
+  applyTheme(next);
+  try {
+    localStorage.setItem("theme", next);
+  } catch (e) {}
+});
 
 function formatTime(date = new Date()) {
   return date.toLocaleTimeString([], {

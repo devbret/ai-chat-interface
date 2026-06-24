@@ -1,6 +1,6 @@
 # AI Chat Interface
 
-![Screenshot of the AI chat interface.](https://hosting.photobucket.com/bbcfb0d4-be20-44a0-94dc-65bff8947cf2/3b25b173-42e4-4eb7-aad5-c0ca7f97dd43.png)
+![Screenshot of the AI chat interface.](https://hosting.photobucket.com/bbcfb0d4-be20-44a0-94dc-65bff8947cf2/6fd81002-2be0-42c1-b253-1e5a4db7aa0d.png)
 
 Local Flask-based AI chat interface for Ollama-hosted language models, featuring conversations, real-time streaming responses and `.txt` file upload support for analysis.
 

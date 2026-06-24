@@ -4,6 +4,18 @@
     <meta charset="utf-8" />
     <title>AI Chat Interface</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem("theme");
+          var prefersLight =
+            window.matchMedia &&
+            window.matchMedia("(prefers-color-scheme: light)").matches;
+          var theme = saved || (prefersLight ? "light" : "dark");
+          document.documentElement.setAttribute("data-theme", theme);
+        } catch (e) {}
+      })();
+    </script>
     <link href="/static/styles.css" rel="stylesheet" />
   </head>
   <body>
@@ -11,10 +23,20 @@
       <header>
         <div class="header-left">
           <h1>AI Chat Interface</h1>
-          <p class="subtitle">Streaming chat, file analysis, markdown output</p>
         </div>
 
         <div class="toggles">
+          <button
+            id="themeToggle"
+            type="button"
+            class="theme-toggle"
+            aria-pressed="false"
+            aria-label="Toggle light and dark mode"
+          >
+            <span class="theme-toggle-icon" aria-hidden="true">🌙</span>
+            <span class="theme-toggle-label">Dark</span>
+          </button>
+
           <label class="model-select">
             Model
             <select id="modelSelect" data-default="{{ model }}">

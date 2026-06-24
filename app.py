@@ -66,8 +66,6 @@ def _probe_duration(path: str) -> float:
 
 def _extract_video_frames(file_storage, num_frames: int = VIDEO_FRAMES,
                           width: int = VIDEO_FRAME_WIDTH) -> List[str]:
-    """Sample `num_frames` evenly spaced frames from an uploaded video and
-    return them as base64-encoded JPEGs (chronological order)."""
     name = (file_storage.filename or "").lower()
     ext = os.path.splitext(name)[1]
     if ext not in VIDEO_EXTS:
