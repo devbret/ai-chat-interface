@@ -27,6 +27,15 @@
 
         <div class="toggles">
           <button
+            id="newChatBtn"
+            type="button"
+            class="ghost-btn"
+            aria-label="Start a new conversation"
+          >
+            New chat
+          </button>
+
+          <button
             id="themeToggle"
             type="button"
             class="theme-toggle"
@@ -56,13 +65,27 @@
         </div>
       </header>
 
-      <main
-        id="chat"
-        role="log"
-        aria-live="polite"
-        aria-relevant="additions text"
-        aria-label="Chat messages"
-      ></main>
+      <div class="chat-wrap">
+        <main
+          id="chat"
+          role="log"
+          aria-live="polite"
+          aria-relevant="additions text"
+          aria-label="Chat messages"
+        ></main>
+
+        <div id="dropOverlay" class="drop-overlay" hidden></div>
+
+        <button
+          id="scrollBottomBtn"
+          type="button"
+          class="scroll-bottom"
+          aria-label="Jump to latest message"
+          hidden
+        >
+          ↓ Latest
+        </button>
+      </div>
 
       <form id="composer">
         <textarea
@@ -157,6 +180,7 @@
     <script src="/static/vendor/marked.min.js"></script>
     <script src="/static/vendor/marked-footnote.min.js"></script>
     <script src="/static/vendor/purify.min.js"></script>
+    <script src="/static/vendor/highlight.min.js"></script>
     <script src="/static/main.js"></script>
   </body>
 </html>

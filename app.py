@@ -48,10 +48,9 @@ def _read_txt_from_upload(file_storage):
     if not any(name.endswith(ext) for ext in ALLOWED_EXTS):
         abort(400, description="Only .txt files are allowed.")
     data = file_storage.read()
-    try:
-        return data.decode("utf-8", errors="replace")
-    except Exception:
-        abort(400, description="Could not decode file as UTF-8 text.")
+    if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
+        abort(413, description=f"Text file exceeds the {MAX_UPLOAD_MB} MB limit.")
+    return data.decode("utf-8", errors="replace")
 
 def _probe_duration(path: str) -> float:
     try:
@@ -169,6 +168,10 @@ def _final_synthesis(summaries: List[str], user_task: str = "Provide a concise o
     r.raise_for_status()
     return r.json().get("message", {}).get("content", "").strip()
 
+@app.errorhandler(requests.RequestException)
+def handle_upstream_error(e):
+    return jsonify({"error": f"Upstream Ollama request failed: {e}"}), 502
+
 @app.get("/")
 def home():
     return render_template("index.html", model=OLLAMA_MODEL)
@@ -180,9 +183,7 @@ def chat_sync():
     options  = data.get("options") or {}
     model    = data.get("model") or OLLAMA_MODEL
 
-    r = requests.post(f"{OLLAMA_BASE_URL}/api/chat",
-                      json={"model": model, "messages": messages, "stream": False, "options": options},
-                      timeout=600)
+    r = _ollama_chat(messages, stream=False, options=options, model=model)
     r.raise_for_status()
     j = r.json()
     return jsonify({
@@ -199,21 +200,22 @@ def chat_stream():
     model    = data.get("model") or OLLAMA_MODEL
 
     def sse_from_ollama():
-        with requests.post(f"{OLLAMA_BASE_URL}/api/chat",
-                           json={"model": model, "messages": messages, "stream": True, "options": options},
-                           stream=True, timeout=600) as r:
-            r.raise_for_status()
-            for line in r.iter_lines():
-                if not line:
-                    continue
-                try:
-                    j = json.loads(line.decode("utf-8"))
-                except Exception:
-                    continue
-                if "message" in j and "content" in j["message"]:
-                    yield f"data: {json.dumps({'delta': j['message']['content'], 'done': False})}\n\n"
-                if j.get("done"):
-                    yield "data: {\"done\": true}\n\n"
+        try:
+            with _ollama_chat(messages, stream=True, options=options, model=model) as r:
+                r.raise_for_status()
+                for line in r.iter_lines():
+                    if not line:
+                        continue
+                    try:
+                        j = json.loads(line.decode("utf-8"))
+                    except Exception:
+                        continue
+                    if "message" in j and "content" in j["message"]:
+                        yield f"data: {json.dumps({'delta': j['message']['content'], 'done': False})}\n\n"
+                    if j.get("done"):
+                        yield "data: {\"done\": true}\n\n"
+        except requests.RequestException as e:
+            yield f"data: {json.dumps({'error': f'Ollama request failed: {e}'})}\n\n"
 
     headers = {"Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive"}
     return Response(stream_with_context(sse_from_ollama()), headers=headers)
@@ -264,41 +266,44 @@ def analyze_file_stream():
     chunks = _chunk_text(text, max_chars=6000)
 
     def run():
-        if len(chunks) == 1:
-            sys = "You are a precise analyst."
-            prompt = f"{task or 'Summarize the main points clearly.'}\n\nText:\n{chunks[0]}"
-            with _ollama_chat(
-                [{"role": "system", "content": sys},
-                 {"role": "user", "content": prompt}],
-                stream=True,
-                options={"temperature": 0.2, "num_ctx": 32768, "num_predict": -1},
-                model=model
-            ) as r:
-                r.raise_for_status()
-                assembled = []
-                for line in r.iter_lines():
-                    if not line:
-                        continue
-                    try: j = json.loads(line.decode("utf-8"))
-                    except Exception: continue
-                    if "message" in j and "content" in j["message"]:
-                        delta = j["message"]["content"]
-                        assembled.append(delta)
-                        yield f"data: {json.dumps({'stage':'final','delta':delta})}\n\n"
-                    if j.get("done"):
-                        text_final = "".join(assembled)
-                        yield f"data: {json.dumps({'stage':'final','text':text_final})}\n\n"
-                        yield "data: {\"done\": true}\n\n"
-                        return
-        summaries = []
-        N = len(chunks)
-        for i, c in enumerate(chunks, start=1):
-            s = _summarize_chunk(c, extra_instruction=task, model=model)
-            summaries.append(s)
-            yield f"data: {json.dumps({'stage':'chunk','index':i,'of':N,'summary':s})}\n\n"
-        final = _final_synthesis(summaries, user_task=task or "Provide a concise overall summary with key themes, insights, and notable entities/dates.", model=model)
-        yield f"data: {json.dumps({'stage':'final','text':final})}\n\n"
-        yield "data: {\"done\": true}\n\n"
+        try:
+            if len(chunks) == 1:
+                sys = "You are a precise analyst."
+                prompt = f"{task or 'Summarize the main points clearly.'}\n\nText:\n{chunks[0]}"
+                with _ollama_chat(
+                    [{"role": "system", "content": sys},
+                     {"role": "user", "content": prompt}],
+                    stream=True,
+                    options={"temperature": 0.2, "num_ctx": 32768, "num_predict": -1},
+                    model=model
+                ) as r:
+                    r.raise_for_status()
+                    assembled = []
+                    for line in r.iter_lines():
+                        if not line:
+                            continue
+                        try: j = json.loads(line.decode("utf-8"))
+                        except Exception: continue
+                        if "message" in j and "content" in j["message"]:
+                            delta = j["message"]["content"]
+                            assembled.append(delta)
+                            yield f"data: {json.dumps({'stage':'final','delta':delta})}\n\n"
+                        if j.get("done"):
+                            text_final = "".join(assembled)
+                            yield f"data: {json.dumps({'stage':'final','text':text_final})}\n\n"
+                            yield "data: {\"done\": true}\n\n"
+                            return
+            summaries = []
+            N = len(chunks)
+            for i, c in enumerate(chunks, start=1):
+                s = _summarize_chunk(c, extra_instruction=task, model=model)
+                summaries.append(s)
+                yield f"data: {json.dumps({'stage':'chunk','index':i,'of':N,'summary':s})}\n\n"
+            final = _final_synthesis(summaries, user_task=task or "Provide a concise overall summary with key themes, insights, and notable entities/dates.", model=model)
+            yield f"data: {json.dumps({'stage':'final','text':final})}\n\n"
+            yield "data: {\"done\": true}\n\n"
+        except requests.RequestException as e:
+            yield f"data: {json.dumps({'error': f'Ollama request failed: {e}'})}\n\n"
 
     headers = {"Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive"}
     return Response(stream_with_context(run()), headers=headers)
@@ -337,28 +342,34 @@ def analyze_video_stream():
 
     def run():
         yield f"data: {json.dumps({'stage':'frames','frames':len(frames)})}\n\n"
-        with _ollama_chat(
-            messages,
-            stream=True,
-            options={"temperature": 0.2, "num_ctx": 32768, "num_predict": -1},
-            model=model
-        ) as r:
-            r.raise_for_status()
-            for line in r.iter_lines():
-                if not line:
-                    continue
-                try:
-                    j = json.loads(line.decode("utf-8"))
-                except Exception:
-                    continue
-                if "message" in j and "content" in j["message"]:
-                    yield f"data: {json.dumps({'delta': j['message']['content']})}\n\n"
-                if j.get("done"):
-                    yield "data: {\"done\": true}\n\n"
-                    return
+        try:
+            with _ollama_chat(
+                messages,
+                stream=True,
+                options={"temperature": 0.2, "num_ctx": 32768, "num_predict": -1},
+                model=model
+            ) as r:
+                r.raise_for_status()
+                for line in r.iter_lines():
+                    if not line:
+                        continue
+                    try:
+                        j = json.loads(line.decode("utf-8"))
+                    except Exception:
+                        continue
+                    if "message" in j and "content" in j["message"]:
+                        yield f"data: {json.dumps({'delta': j['message']['content']})}\n\n"
+                    if j.get("done"):
+                        yield "data: {\"done\": true}\n\n"
+                        return
+        except requests.RequestException as e:
+            yield f"data: {json.dumps({'error': f'Ollama request failed: {e}'})}\n\n"
 
     headers = {"Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive"}
     return Response(stream_with_context(run()), headers=headers)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000, debug=True)
+    host  = os.getenv("HOST", "127.0.0.1")
+    port  = _int_env("PORT", 8000)
+    debug = os.getenv("FLASK_DEBUG", "").strip().lower() in ("1", "true", "yes", "on")
+    app.run(host=host, port=port, debug=debug)
