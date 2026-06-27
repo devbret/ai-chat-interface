@@ -23,13 +23,22 @@ const sendBtn = document.getElementById("sendBtn");
 const stopBtn = document.getElementById("stopBtn");
 
 const themeToggle = document.getElementById("themeToggle");
+const newChatBtn = document.getElementById("newChatBtn");
+const scrollBottomBtn = document.getElementById("scrollBottomBtn");
+const dropOverlay = document.getElementById("dropOverlay");
+
+const VIDEO_EXTS = [".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"];
+const TXT_EXTS = [".txt"];
 
 let messages = [];
 let currentAbort = null;
 
 function applyTheme(theme) {
   const isLight = theme === "light";
-  document.documentElement.setAttribute("data-theme", isLight ? "light" : "dark");
+  document.documentElement.setAttribute(
+    "data-theme",
+    isLight ? "light" : "dark",
+  );
 
   const icon = themeToggle.querySelector(".theme-toggle-icon");
   const label = themeToggle.querySelector(".theme-toggle-label");
@@ -148,10 +157,12 @@ function createMessage(role, text = "", options = {}) {
 
   wrapper.appendChild(meta);
   wrapper.appendChild(bubble);
+
+  clearEmptyState();
   chatEl.appendChild(wrapper);
 
   setBubbleContent(bubble, text, { markdown });
-  scrollChatToBottom();
+  scrollChatToBottom(true);
 
   return { wrapper, bubble, meta };
 }
@@ -194,9 +205,258 @@ function addTypingIndicator(bubble) {
   `;
 }
 
-function scrollChatToBottom() {
-  chatEl.scrollTop = chatEl.scrollHeight;
+function isNearBottom(threshold = 80) {
+  return (
+    chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight <= threshold
+  );
 }
+
+function scrollChatToBottom(force = false) {
+  if (force || isNearBottom()) {
+    chatEl.scrollTop = chatEl.scrollHeight;
+  }
+  updateScrollButton();
+}
+
+function updateScrollButton() {
+  scrollBottomBtn.hidden = isNearBottom();
+}
+
+chatEl.addEventListener("scroll", updateScrollButton);
+
+scrollBottomBtn.addEventListener("click", () => {
+  chatEl.scrollTo({ top: chatEl.scrollHeight, behavior: "smooth" });
+  scrollBottomBtn.hidden = true;
+});
+
+const EMPTY_STATE_HTML = `
+  <div class="empty-state">
+    <div class="empty-hero">
+      <div class="empty-badge" aria-hidden="true">💬</div>
+      <h2>How can I help?</h2>
+      <p>Chat with your local model, or bring in a document or video to analyze — everything runs through your own Ollama instance. You can also drag &amp; drop a file anywhere.</p>
+    </div>
+
+    <div class="empty-cards">
+      <button type="button" class="empty-card" data-action="chat">
+        <span class="empty-card-icon" aria-hidden="true">💬</span>
+        <span class="empty-card-title">Ask anything</span>
+        <span class="empty-card-desc">Start a conversation with the model.</span>
+      </button>
+      <button type="button" class="empty-card" data-action="txt">
+        <span class="empty-card-icon" aria-hidden="true">📄</span>
+        <span class="empty-card-title">Analyze a document</span>
+        <span class="empty-card-desc">Summarize or extract from a .txt file.</span>
+      </button>
+      <button type="button" class="empty-card" data-action="video">
+        <span class="empty-card-icon" aria-hidden="true">🎬</span>
+        <span class="empty-card-title">Analyze a video</span>
+        <span class="empty-card-desc">Describe what happens across the frames.</span>
+      </button>
+    </div>
+
+    <div class="empty-suggestions">
+      <span class="empty-sug-label">Try</span>
+      <button type="button" class="empty-chip" data-prompt="Explain like I'm five: ">Explain something simply</button>
+      <button type="button" class="empty-chip" data-prompt="Summarize the following text: ">Summarize text</button>
+      <button type="button" class="empty-chip" data-prompt="Write a short Python function that ">Write a code snippet</button>
+    </div>
+  </div>
+`;
+
+function renderEmptyState() {
+  if (chatEl.querySelector(".message")) return;
+  chatEl.innerHTML = EMPTY_STATE_HTML;
+
+  const es = chatEl.querySelector(".empty-state");
+  if (!es) return;
+
+  es.addEventListener("click", (e) => {
+    const card = e.target.closest("[data-action]");
+    if (card) {
+      const action = card.dataset.action;
+      if (action === "txt") attachBtn.click();
+      else if (action === "video") attachVideoBtn.click();
+      else promptEl.focus();
+      return;
+    }
+
+    const chip = e.target.closest("[data-prompt]");
+    if (chip) {
+      promptEl.value = chip.dataset.prompt;
+      autoResizeTextarea();
+      promptEl.focus();
+    }
+  });
+}
+
+function clearEmptyState() {
+  const es = chatEl.querySelector(".empty-state");
+  if (es) es.remove();
+}
+
+function makeCopyButton(getText, label = "Copy") {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "copy-btn";
+  btn.textContent = label;
+  btn.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(getText() || "");
+      btn.textContent = "Copied";
+    } catch {
+      btn.textContent = "Failed";
+    }
+    setTimeout(() => {
+      btn.textContent = label;
+    }, 1500);
+  });
+  return btn;
+}
+
+function enhanceCodeBlocks(bubble) {
+  bubble.querySelectorAll("pre > code").forEach((code) => {
+    const pre = code.parentElement;
+    if (!pre || pre.dataset.enhanced) return;
+    pre.dataset.enhanced = "1";
+
+    const langMatch = (code.className || "").match(/language-([\w+-]+)/i);
+    const lang = langMatch ? langMatch[1] : "";
+
+    if (window.hljs) {
+      try {
+        hljs.highlightElement(code);
+      } catch {}
+    }
+
+    const wrap = document.createElement("div");
+    wrap.className = "code-block";
+    pre.parentNode.insertBefore(wrap, pre);
+
+    const head = document.createElement("div");
+    head.className = "code-head";
+
+    const label = document.createElement("span");
+    label.className = "code-lang";
+    label.textContent = lang || "code";
+
+    head.appendChild(label);
+    head.appendChild(makeCopyButton(() => code.textContent));
+
+    wrap.appendChild(head);
+    wrap.appendChild(pre);
+  });
+}
+
+function finalizeAssistantMessage(messageObj, rawText) {
+  enhanceCodeBlocks(messageObj.bubble);
+  if (
+    rawText &&
+    rawText.trim() &&
+    !messageObj.meta.querySelector(".meta-copy")
+  ) {
+    const btn = makeCopyButton(() => rawText);
+    btn.classList.add("meta-copy");
+    messageObj.meta.appendChild(btn);
+  }
+}
+
+function conversationStarted() {
+  return messages.length > 0;
+}
+
+function updateSystemPromptAvailability() {
+  const started = conversationStarted();
+  const lockMsg =
+    "System prompt applies to a new conversation. Start a new chat to change it.";
+  sysToggle.disabled = started;
+  sysEl.disabled = started;
+  const labelEl = sysToggle.closest("label");
+  if (labelEl) labelEl.title = started ? lockMsg : "";
+  sysEl.title = started ? lockMsg : "";
+}
+
+function startNewChat() {
+  if (currentAbort) currentAbort.abort();
+  messages = [];
+  chatEl.innerHTML = "";
+  renderEmptyState();
+  updateSystemPromptAvailability();
+  scrollBottomBtn.hidden = true;
+  promptEl.focus();
+}
+
+newChatBtn.addEventListener("click", startNewChat);
+
+let dragHideTimer = null;
+
+function hideDropOverlay() {
+  clearTimeout(dragHideTimer);
+  dragHideTimer = null;
+  dropOverlay.hidden = true;
+}
+
+function dropHasFiles(e) {
+  return Array.from(e.dataTransfer?.types || []).includes("Files");
+}
+
+function setInputFile(input, file) {
+  const dt = new DataTransfer();
+  dt.items.add(file);
+  input.files = dt.files;
+}
+
+function hasExt(name, exts) {
+  const lower = (name || "").toLowerCase();
+  return exts.some((ext) => lower.endsWith(ext));
+}
+
+function flashBadge(text) {
+  fileBadge.hidden = false;
+  fileBadge.textContent = text;
+  fileBadge.classList.add("warn");
+  clearFileBtn.hidden = true;
+  setTimeout(() => {
+    if (fileBadge.classList.contains("warn")) clearFileBadge();
+  }, 2200);
+}
+
+function acceptDroppedFile(file) {
+  if (hasExt(file.name, VIDEO_EXTS)) {
+    fileInput.value = "";
+    setInputFile(videoInput, file);
+    showFileBadge(file.name);
+  } else if (hasExt(file.name, TXT_EXTS)) {
+    videoInput.value = "";
+    setInputFile(fileInput, file);
+    showFileBadge(file.name);
+  } else {
+    flashBadge("Unsupported file type");
+    return;
+  }
+  promptEl.focus();
+}
+
+window.addEventListener("dragover", (e) => {
+  if (!dropHasFiles(e) || sendBtn.disabled) return;
+  e.preventDefault();
+  dropOverlay.hidden = false;
+  clearTimeout(dragHideTimer);
+  dragHideTimer = setTimeout(hideDropOverlay, 120);
+});
+
+window.addEventListener("dragleave", (e) => {
+  if (e.relatedTarget === null) hideDropOverlay();
+});
+
+window.addEventListener("drop", (e) => {
+  hideDropOverlay();
+  if (!dropHasFiles(e)) return;
+  e.preventDefault();
+  if (sendBtn.disabled) return;
+  const file = e.dataTransfer.files?.[0];
+  if (file) acceptDroppedFile(file);
+});
 
 function appendAssistantMessageToHistory(content) {
   messages.push({ role: "assistant", content });
@@ -233,6 +493,8 @@ function setStreamingUI(isStreaming) {
   framesInput.disabled = isStreaming;
   fileStreamToggle.disabled = isStreaming;
   clearFileBtn.disabled = isStreaming;
+
+  if (!isStreaming) updateSystemPromptAvailability();
 }
 
 stopBtn.addEventListener("click", () => {
@@ -279,12 +541,14 @@ function getSelectedUpload() {
 function showFileBadge(name) {
   fileBadge.hidden = false;
   fileBadge.textContent = name;
+  fileBadge.classList.remove("warn");
   clearFileBtn.hidden = false;
 }
 
 function clearFileBadge() {
   fileBadge.hidden = true;
   fileBadge.textContent = "";
+  fileBadge.classList.remove("warn");
   clearFileBtn.hidden = true;
 }
 
@@ -385,6 +649,9 @@ composer.addEventListener("submit", async (e) => {
 });
 
 async function askSync(msgs, options) {
+  setStreamingUI(true);
+  currentAbort = new AbortController();
+
   const assistantMsg = createMessage("assistant", "Working…", {
     tag: "sync",
     state: "pending",
@@ -396,6 +663,7 @@ async function askSync(msgs, options) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ messages: msgs, options, model: modelEl.value }),
+      signal: currentAbort.signal,
     });
 
     if (!res.ok) {
@@ -415,12 +683,22 @@ async function askSync(msgs, options) {
     setBubbleContent(assistantMsg.bubble, content, { markdown: true });
     setMessageTag(assistantMsg, "sync");
     appendAssistantMessageToHistory(content);
+    finalizeAssistantMessage(assistantMsg, content);
   } catch (e) {
-    setBubbleState(assistantMsg.bubble, "error");
-    setBubbleContent(assistantMsg.bubble, `Error: ${e?.message || e}`, {
-      markdown: false,
-    });
-    setMessageTag(assistantMsg, "sync • error");
+    if (e?.name === "AbortError") {
+      setBubbleState(assistantMsg.bubble, "canceled");
+      setBubbleContent(assistantMsg.bubble, "Canceled.", { markdown: false });
+      setMessageTag(assistantMsg, "sync • canceled");
+    } else {
+      setBubbleState(assistantMsg.bubble, "error");
+      setBubbleContent(assistantMsg.bubble, `Error: ${e?.message || e}`, {
+        markdown: false,
+      });
+      setMessageTag(assistantMsg, "sync • error");
+    }
+  } finally {
+    setStreamingUI(false);
+    currentAbort = null;
   }
 }
 
@@ -461,11 +739,22 @@ async function askStream(msgs, options) {
     setBubbleContent(assistantMsg.bubble, "", { markdown: true });
 
     await streamSSE(res, (payload) => {
-      if (payload.done) {
+      if (payload.error) {
+        setBubbleState(assistantMsg.bubble, "error");
+        setBubbleContent(
+          assistantMsg.bubble,
+          accumulated
+            ? `${accumulated}\n\n_Error: ${payload.error}_`
+            : `Error: ${payload.error}`,
+          { markdown: !!accumulated },
+        );
+        setMessageTag(assistantMsg, "stream • error");
+      } else if (payload.done) {
         setBubbleState(assistantMsg.bubble, "done");
         setBubbleContent(assistantMsg.bubble, accumulated, { markdown: true });
         setMessageTag(assistantMsg, "stream");
         appendAssistantMessageToHistory(accumulated);
+        finalizeAssistantMessage(assistantMsg, accumulated);
       } else if (payload.delta) {
         accumulated += payload.delta;
         setBubbleContent(assistantMsg.bubble, accumulated, { markdown: true });
@@ -494,6 +783,9 @@ async function askStream(msgs, options) {
 }
 
 async function analyzeFileSyncToChat(file, task, assistantMsg) {
+  setStreamingUI(true);
+  currentAbort = new AbortController();
+
   setBubbleState(assistantMsg.bubble, "pending");
   setBubbleContent(assistantMsg.bubble, "Uploading and analyzing…", {
     markdown: false,
@@ -508,6 +800,7 @@ async function analyzeFileSyncToChat(file, task, assistantMsg) {
     const res = await fetch("/api/analyze-file", {
       method: "POST",
       body: form,
+      signal: currentAbort.signal,
     });
 
     if (!res.ok) {
@@ -527,12 +820,22 @@ async function analyzeFileSyncToChat(file, task, assistantMsg) {
     setBubbleContent(assistantMsg.bubble, result, { markdown: true });
     setMessageTag(assistantMsg, "file • sync");
     appendAssistantMessageToHistory(result);
+    finalizeAssistantMessage(assistantMsg, result);
   } catch (e) {
-    setBubbleState(assistantMsg.bubble, "error");
-    setBubbleContent(assistantMsg.bubble, `Error: ${e?.message || e}`, {
-      markdown: false,
-    });
-    setMessageTag(assistantMsg, "file • sync • error");
+    if (e?.name === "AbortError") {
+      setBubbleState(assistantMsg.bubble, "canceled");
+      setBubbleContent(assistantMsg.bubble, "Canceled.", { markdown: false });
+      setMessageTag(assistantMsg, "file • sync • canceled");
+    } else {
+      setBubbleState(assistantMsg.bubble, "error");
+      setBubbleContent(assistantMsg.bubble, `Error: ${e?.message || e}`, {
+        markdown: false,
+      });
+      setMessageTag(assistantMsg, "file • sync • error");
+    }
+  } finally {
+    setStreamingUI(false);
+    currentAbort = null;
   }
 }
 
@@ -570,12 +873,27 @@ async function analyzeFileStreamToChat(file, task, assistantMsg) {
     setBubbleContent(assistantMsg.bubble, "", { markdown: true });
 
     await streamSSE(res, (payload) => {
+      if (payload.error) {
+        const combined = buildFileAnalysisMarkdown(chunkText, finalText);
+        setBubbleState(assistantMsg.bubble, "error");
+        setBubbleContent(
+          assistantMsg.bubble,
+          combined
+            ? `${combined}\n\n---\n\n_Error: ${payload.error}_`
+            : `Error: ${payload.error}`,
+          { markdown: !!combined },
+        );
+        setMessageTag(assistantMsg, "file • stream • error");
+        return;
+      }
+
       if (payload.done) {
         const combined = buildFileAnalysisMarkdown(chunkText, finalText);
         setBubbleState(assistantMsg.bubble, "done");
         setBubbleContent(assistantMsg.bubble, combined, { markdown: true });
         setMessageTag(assistantMsg, "file • stream");
         appendAssistantMessageToHistory(combined);
+        finalizeAssistantMessage(assistantMsg, combined);
         return;
       }
 
@@ -620,6 +938,9 @@ async function analyzeFileStreamToChat(file, task, assistantMsg) {
 }
 
 async function analyzeVideoSyncToChat(file, task, assistantMsg) {
+  setStreamingUI(true);
+  currentAbort = new AbortController();
+
   setBubbleState(assistantMsg.bubble, "pending");
   setBubbleContent(assistantMsg.bubble, "Extracting frames and analyzing…", {
     markdown: false,
@@ -635,6 +956,7 @@ async function analyzeVideoSyncToChat(file, task, assistantMsg) {
     const res = await fetch("/api/analyze-video", {
       method: "POST",
       body: form,
+      signal: currentAbort.signal,
     });
 
     if (!res.ok) {
@@ -654,12 +976,22 @@ async function analyzeVideoSyncToChat(file, task, assistantMsg) {
     setBubbleContent(assistantMsg.bubble, result, { markdown: true });
     setMessageTag(assistantMsg, `video • sync • ${j.frames || 0} frames`);
     appendAssistantMessageToHistory(result);
+    finalizeAssistantMessage(assistantMsg, result);
   } catch (e) {
-    setBubbleState(assistantMsg.bubble, "error");
-    setBubbleContent(assistantMsg.bubble, `Error: ${e?.message || e}`, {
-      markdown: false,
-    });
-    setMessageTag(assistantMsg, "video • sync • error");
+    if (e?.name === "AbortError") {
+      setBubbleState(assistantMsg.bubble, "canceled");
+      setBubbleContent(assistantMsg.bubble, "Canceled.", { markdown: false });
+      setMessageTag(assistantMsg, "video • sync • canceled");
+    } else {
+      setBubbleState(assistantMsg.bubble, "error");
+      setBubbleContent(assistantMsg.bubble, `Error: ${e?.message || e}`, {
+        markdown: false,
+      });
+      setMessageTag(assistantMsg, "video • sync • error");
+    }
+  } finally {
+    setStreamingUI(false);
+    currentAbort = null;
   }
 }
 
@@ -700,11 +1032,22 @@ async function analyzeVideoStreamToChat(file, task, assistantMsg) {
     }
 
     await streamSSE(res, (payload) => {
-      if (payload.done) {
+      if (payload.error) {
+        setBubbleState(assistantMsg.bubble, "error");
+        setBubbleContent(
+          assistantMsg.bubble,
+          accumulated
+            ? `${accumulated}\n\n_Error: ${payload.error}_`
+            : `Error: ${payload.error}`,
+          { markdown: !!accumulated },
+        );
+        setMessageTag(assistantMsg, "video • stream • error");
+      } else if (payload.done) {
         setBubbleState(assistantMsg.bubble, "done");
         setBubbleContent(assistantMsg.bubble, accumulated, { markdown: true });
         setMessageTag(assistantMsg, `video • stream • ${frameCount} frames`);
         appendAssistantMessageToHistory(accumulated);
+        finalizeAssistantMessage(assistantMsg, accumulated);
       } else if (payload.stage === "frames") {
         frameCount = payload.frames || 0;
         addTypingIndicator(assistantMsg.bubble);
@@ -856,4 +1199,6 @@ promptEl.addEventListener("keydown", (e) => {
   }
 });
 
+renderEmptyState();
+updateSystemPromptAvailability();
 loadModels();
