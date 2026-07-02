@@ -20,7 +20,7 @@ Below are instructions for installing and running this application on a Linux ma
 
 - [Python](https://www.python.org/downloads/)
 
-- [FFmpeg](https://ffmpeg.org/download.html) (provides the `ffmpeg` and `ffprobe` commands, required for video analysis)
+- [FFmpeg](https://ffmpeg.org/download.html)
 
 ### Steps
 
