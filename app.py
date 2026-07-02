@@ -34,6 +34,7 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = max(MAX_UPLOAD_MB, MAX_VIDEO_UPLOAD_MB) * 1024 * 1024
 ALLOWED_EXTS = {".txt"}
 VIDEO_EXTS   = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"}
+IMAGE_EXTS   = {".png", ".jpg", ".jpeg", ".webp"}
 
 def _ollama_chat(messages, stream=False, options=None, model=None):
     payload = {
@@ -57,6 +58,25 @@ def _read_txt_from_upload(file_storage):
     if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
         abort(413, description=f"Text file exceeds the {MAX_UPLOAD_MB} MB limit.")
     return data.decode("utf-8", errors="replace")
+
+def _read_image_b64(file_storage):
+    name = (file_storage.filename or "").lower()
+    ext = os.path.splitext(name)[1]
+    if ext not in IMAGE_EXTS:
+        abort(400, description="Unsupported image type. Allowed: " + ", ".join(sorted(IMAGE_EXTS)))
+    data = file_storage.read()
+    if not data:
+        abort(400, description="Empty image file.")
+    return base64.b64encode(data).decode("ascii")
+
+def _image_messages(b64: str, task: str = "") -> List[dict]:
+    sys = ("You are a careful image analyst. Describe the image accurately: the setting, "
+           "key objects, people, any visible text, and notable details.")
+    user_text = task.strip() if task else "Describe this image."
+    return [
+        {"role": "system", "content": sys},
+        {"role": "user", "content": user_text, "images": [b64]},
+    ]
 
 def _probe_duration(path: str) -> float:
     try:
@@ -339,6 +359,64 @@ def analyze_file_stream():
             final = _final_synthesis(summaries, user_task=task or "Provide a concise overall summary with key themes, insights, and notable entities/dates.", model=model)
             yield f"data: {json.dumps({'stage':'final','text':final})}\n\n"
             yield "data: {\"done\": true}\n\n"
+        except requests.RequestException as e:
+            yield f"data: {json.dumps({'error': _ollama_error_message(e)})}\n\n"
+
+    headers = {"Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive"}
+    return Response(stream_with_context(run()), headers=headers)
+
+@app.post("/api/analyze-image")
+def analyze_image_sync():
+    _enforce_upload_limit(MAX_UPLOAD_MB)
+    if "file" not in request.files:
+        abort(400, description="Missing file.")
+    f = request.files["file"]
+    task  = request.form.get("task", "").strip()
+    model = request.form.get("model") or None
+
+    b64 = _read_image_b64(f)
+    r = _ollama_chat(
+        _image_messages(b64, task),
+        stream=False,
+        options={"temperature": 0.2, "num_ctx": ANALYSIS_NUM_CTX, "num_predict": -1},
+        model=model
+    )
+    r.raise_for_status()
+    out = r.json().get("message", {}).get("content", "").strip()
+    return jsonify({"result": out})
+
+@app.post("/api/analyze-image-stream")
+def analyze_image_stream():
+    _enforce_upload_limit(MAX_UPLOAD_MB)
+    if "file" not in request.files:
+        abort(400, description="Missing file.")
+    f = request.files["file"]
+    task  = request.form.get("task", "").strip()
+    model = request.form.get("model") or None
+
+    messages = _image_messages(_read_image_b64(f), task)
+
+    def run():
+        try:
+            with _ollama_chat(
+                messages,
+                stream=True,
+                options={"temperature": 0.2, "num_ctx": ANALYSIS_NUM_CTX, "num_predict": -1},
+                model=model
+            ) as r:
+                _raise_for_status_streaming(r)
+                for line in r.iter_lines():
+                    if not line:
+                        continue
+                    try:
+                        j = json.loads(line.decode("utf-8"))
+                    except Exception:
+                        continue
+                    if "message" in j and "content" in j["message"]:
+                        yield f"data: {json.dumps({'delta': j['message']['content']})}\n\n"
+                    if j.get("done"):
+                        yield "data: {\"done\": true}\n\n"
+                        return
         except requests.RequestException as e:
             yield f"data: {json.dumps({'error': _ollama_error_message(e)})}\n\n"
 

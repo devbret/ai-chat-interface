@@ -167,6 +167,10 @@ body {
   max-width: 980px;
   margin: 0 auto;
   padding: 20px;
+  height: 100vh;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
 }
 
 header {
@@ -253,8 +257,7 @@ header .toggles label {
   border: 1px solid var(--border);
   border-radius: 16px;
   padding: 16px;
-  min-height: 55vh;
-  max-height: 65vh;
+  height: 100%;
   overflow: auto;
   display: flex;
   flex-direction: column;
@@ -686,11 +689,6 @@ header .toggles label {
     max-width: 100%;
   }
 
-  #chat {
-    min-height: 50vh;
-    max-height: 62vh;
-  }
-
   .empty-cards {
     grid-template-columns: 1fr;
   }
@@ -713,6 +711,8 @@ header .toggles label {
 
 .chat-wrap {
   position: relative;
+  flex: 1;
+  min-height: 0;
 }
 
 .scroll-bottom {
@@ -783,7 +783,7 @@ header .toggles label {
 
 .empty-cards {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   margin-bottom: 18px;
 }
@@ -1189,6 +1189,15 @@ header .toggles label {
   border: 1px solid var(--yellow-border);
   border-radius: 4px;
   padding: 0 2px;
+}
+
+.image-preview {
+  display: block;
+  margin-top: 8px;
+  max-width: 240px;
+  max-height: 160px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
 }
 
 .edit-area {
