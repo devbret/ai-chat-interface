@@ -157,7 +157,7 @@
               id="numPredict"
               type="number"
               min="-1"
-              max="32768"
+              max="{{ num_ctx_max }}"
               value="-1"
             />
           </label>
@@ -180,8 +180,8 @@
               id="numCtx"
               type="number"
               min="2048"
-              max="32768"
-              value="8192"
+              max="{{ num_ctx_max }}"
+              value="{{ [8192, num_ctx_max] | min }}"
             />
           </label>
         </div>
@@ -197,14 +197,17 @@
       >
         <div class="history-head">
           <h2>Previous chats</h2>
-          <button
-            id="historyCloseBtn"
-            type="button"
-            class="ghost-btn"
-            aria-label="Close chat history"
-          >
-            ✕
-          </button>
+          <div class="history-head-actions">
+            <button id="statsBtn" type="button" class="ghost-btn">Stats</button>
+            <button
+              id="historyCloseBtn"
+              type="button"
+              class="ghost-btn"
+              aria-label="Close chat history"
+            >
+              ✕
+            </button>
+          </div>
         </div>
         <div class="history-search">
           <input
@@ -216,7 +219,42 @@
           />
         </div>
         <ul id="historyList" class="history-list"></ul>
+        <div class="history-foot">
+          <button id="exportAllBtn" type="button" class="ghost-btn">
+            Export all
+          </button>
+          <button id="importBtn" type="button" class="ghost-btn">Import</button>
+          <input
+            id="importInput"
+            type="file"
+            accept=".json,application/json"
+            hidden
+          />
+          <span id="historyFootNote" class="history-foot-note"></span>
+        </div>
       </aside>
+
+      <div id="statsBackdrop" class="stats-backdrop" hidden></div>
+      <div
+        id="statsModal"
+        class="stats-modal"
+        role="dialog"
+        aria-label="Chat statistics"
+        hidden
+      >
+        <div class="stats-head">
+          <h2>Your chats in numbers</h2>
+          <button
+            id="statsCloseBtn"
+            type="button"
+            class="ghost-btn"
+            aria-label="Close statistics"
+          >
+            ✕
+          </button>
+        </div>
+        <div id="statsBody" class="stats-body"></div>
+      </div>
     </div>
 
     <script src="/static/vendor/marked.min.js"></script>
