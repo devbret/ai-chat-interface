@@ -20,6 +20,8 @@ Below are instructions for installing and running this application on a Linux ma
 
 - [Python](https://www.python.org/downloads/)
 
+- [FFmpeg](https://ffmpeg.org/download.html) (provides the `ffmpeg` and `ffprobe` commands, required for video analysis)
+
 ### Steps
 
 1. Install the above programs
@@ -36,7 +38,7 @@ Below are instructions for installing and running this application on a Linux ma
 
 7. Install the needed Python dependencies: `pip install -r requirements.txt`
 
-8. Convert the `.env.template` file into a `.env` file: `cp .env.template .env`
+8. Convert the `.env-template` file into a `.env` file: `cp .env-template .env`
 
 9. Add values for environmental variables to the `.env` file: `nano .env`
 

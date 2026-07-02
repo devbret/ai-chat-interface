@@ -24,6 +24,12 @@ const stopBtn = document.getElementById("stopBtn");
 
 const themeToggle = document.getElementById("themeToggle");
 const newChatBtn = document.getElementById("newChatBtn");
+const historyBtn = document.getElementById("historyBtn");
+const historyPanel = document.getElementById("historyPanel");
+const historyList = document.getElementById("historyList");
+const historyCloseBtn = document.getElementById("historyCloseBtn");
+const historyBackdrop = document.getElementById("historyBackdrop");
+const historySearch = document.getElementById("historySearch");
 const scrollBottomBtn = document.getElementById("scrollBottomBtn");
 const dropOverlay = document.getElementById("dropOverlay");
 
@@ -379,6 +385,8 @@ function updateSystemPromptAvailability() {
 function startNewChat() {
   if (currentAbort) currentAbort.abort();
   messages = [];
+  store.activeId = null;
+  idbPutActiveId(null);
   chatEl.innerHTML = "";
   renderEmptyState();
   updateSystemPromptAvailability();
@@ -458,9 +466,400 @@ window.addEventListener("drop", (e) => {
   if (file) acceptDroppedFile(file);
 });
 
-function appendAssistantMessageToHistory(content) {
-  messages.push({ role: "assistant", content });
+const DB_NAME = "ai-chat-interface";
+const DB_VERSION = 1;
+const LEGACY_STORE_KEY = "ai-chat-store-v1";
+const LEGACY_HISTORY_KEY = "ai-chat-history-v1";
+
+let db = null;
+let store = { activeId: null, chats: [] };
+
+function genChatId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
+
+function sanitizeMessages(list) {
+  if (!Array.isArray(list)) return [];
+  return list.filter(
+    (m) =>
+      m &&
+      typeof m.content === "string" &&
+      ["system", "user", "assistant"].includes(m.role),
+  );
+}
+
+function sanitizeChat(c) {
+  const msgs = sanitizeMessages(c?.messages);
+  if (!msgs.length) return null;
+  return {
+    id: String(c.id || genChatId()),
+    createdAt: c.createdAt || Date.now(),
+    updatedAt: c.updatedAt || c.createdAt || Date.now(),
+    messages: msgs,
+  };
+}
+
+function idbRequest(req) {
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function idbOpen() {
+  const req = indexedDB.open(DB_NAME, DB_VERSION);
+  req.onupgradeneeded = () => {
+    const d = req.result;
+    if (!d.objectStoreNames.contains("chats")) {
+      d.createObjectStore("chats", { keyPath: "id" });
+    }
+    if (!d.objectStoreNames.contains("meta")) {
+      d.createObjectStore("meta");
+    }
+  };
+  return idbRequest(req);
+}
+
+function idbChats(mode) {
+  return db.transaction("chats", mode).objectStore("chats");
+}
+
+function idbMeta(mode) {
+  return db.transaction("meta", mode).objectStore("meta");
+}
+
+function warnStorage(e) {
+  console.warn("Chat storage write failed:", e);
+}
+
+function idbPutChat(chat) {
+  if (!db) return;
+  idbRequest(idbChats("readwrite").put(chat)).catch(warnStorage);
+}
+
+function idbDeleteChat(id) {
+  if (!db) return;
+  idbRequest(idbChats("readwrite").delete(id)).catch(warnStorage);
+}
+
+function idbPutActiveId(id) {
+  if (!db) return;
+  idbRequest(idbMeta("readwrite").put(id, "activeId")).catch(warnStorage);
+}
+
+function readLegacyData() {
+  const out = { chats: [], activeId: null };
+  try {
+    const storeRaw = localStorage.getItem(LEGACY_STORE_KEY);
+    if (storeRaw) {
+      const parsed = JSON.parse(storeRaw);
+      for (const c of Array.isArray(parsed?.chats) ? parsed.chats : []) {
+        const chat = sanitizeChat(c);
+        if (chat) out.chats.push(chat);
+      }
+      if (out.chats.some((c) => c.id === parsed?.activeId)) {
+        out.activeId = parsed.activeId;
+      }
+    }
+    const historyRaw = localStorage.getItem(LEGACY_HISTORY_KEY);
+    if (historyRaw) {
+      const msgs = sanitizeMessages(JSON.parse(historyRaw));
+      if (msgs.length) {
+        const chat = {
+          id: genChatId(),
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          messages: msgs,
+        };
+        out.chats.push(chat);
+        if (!out.activeId) out.activeId = chat.id;
+      }
+    }
+  } catch (e) {}
+  return out;
+}
+
+async function initStore() {
+  db = await idbOpen();
+  const [rawChats, savedActiveId] = await Promise.all([
+    idbRequest(idbChats("readonly").getAll()),
+    idbRequest(idbMeta("readonly").get("activeId")),
+  ]);
+  store.chats = (rawChats || []).map(sanitizeChat).filter(Boolean);
+  store.activeId = savedActiveId || null;
+
+  const legacy = readLegacyData();
+  if (legacy.chats.length) {
+    const known = new Set(store.chats.map((c) => c.id));
+    const imported = legacy.chats.filter((c) => !known.has(c.id));
+    if (imported.length) {
+      const tx = db.transaction("chats", "readwrite");
+      for (const c of imported) tx.objectStore("chats").put(c);
+      await new Promise((resolve, reject) => {
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+      });
+      store.chats.push(...imported);
+    }
+    if (!currentChat() && legacy.activeId) {
+      store.activeId = legacy.activeId;
+      idbPutActiveId(store.activeId);
+    }
+  }
+  try {
+    localStorage.removeItem(LEGACY_STORE_KEY);
+    localStorage.removeItem(LEGACY_HISTORY_KEY);
+  } catch (e) {}
+
+  if (!currentChat()) store.activeId = null;
+}
+
+function currentChat() {
+  return store.chats.find((c) => c.id === store.activeId) || null;
+}
+
+function saveChat() {
+  let chat = currentChat();
+  if (!chat) {
+    if (!messages.length) return;
+    chat = {
+      id: genChatId(),
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      messages: [],
+    };
+    store.chats.push(chat);
+    store.activeId = chat.id;
+    idbPutActiveId(chat.id);
+  }
+  chat.messages = messages;
+  chat.updatedAt = Date.now();
+  idbPutChat(chat);
+}
+
+function pushMessage(msg) {
+  messages.push({ ...msg, time: formatTime() });
+  saveChat();
+}
+
+function apiMessages() {
+  return messages.map(({ role, content }) => ({ role, content }));
+}
+
+function appendAssistantMessageToHistory(content) {
+  pushMessage({ role: "assistant", content });
+}
+
+function renderConversation(msgs) {
+  chatEl.innerHTML = "";
+  for (const m of msgs) {
+    if (m.role === "system") {
+      createMessage("system", m.content, {
+        tag: "session prompt",
+        markdown: true,
+        time: m.time,
+      });
+    } else if (m.role === "user") {
+      createMessage("user", m.content, { tag: "chat", time: m.time });
+    } else {
+      const msgObj = createMessage("assistant", m.content, {
+        state: "done",
+        markdown: true,
+        time: m.time,
+      });
+      finalizeAssistantMessage(msgObj, m.content);
+    }
+  }
+}
+
+function chatTitle(chat) {
+  const firstUser = chat.messages.find((m) => m.role === "user");
+  const text = (firstUser?.content || "Untitled chat")
+    .replace(/\s+/g, " ")
+    .trim();
+  return text.length > 60 ? text.slice(0, 60) + "…" : text;
+}
+
+function formatChatDate(ts) {
+  const d = new Date(ts);
+  const isToday = new Date().toDateString() === d.toDateString();
+  return isToday
+    ? d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    : d.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+function searchChat(chat, q) {
+  let count = 0;
+  let firstIndex = -1;
+  chat.messages.forEach((m, i) => {
+    if (m.content.toLowerCase().includes(q)) {
+      count++;
+      if (firstIndex === -1) firstIndex = i;
+    }
+  });
+  return count ? { count, firstIndex } : null;
+}
+
+function buildSnippet(content, q) {
+  const idx = content.toLowerCase().indexOf(q);
+  const start = Math.max(0, idx - 32);
+  const end = Math.min(content.length, idx + q.length + 64);
+
+  const frag = document.createDocumentFragment();
+  if (start > 0) frag.appendChild(document.createTextNode("…"));
+  frag.appendChild(document.createTextNode(content.slice(start, idx)));
+  const mark = document.createElement("mark");
+  mark.textContent = content.slice(idx, idx + q.length);
+  frag.appendChild(mark);
+  frag.appendChild(document.createTextNode(content.slice(idx + q.length, end)));
+  if (end < content.length) frag.appendChild(document.createTextNode("…"));
+  return frag;
+}
+
+function renderChatList(query = "") {
+  historyList.innerHTML = "";
+  const q = query.trim().toLowerCase();
+  const chats = [...store.chats].sort((a, b) => b.updatedAt - a.updatedAt);
+
+  const rows = [];
+  for (const chat of chats) {
+    if (!q) {
+      rows.push({ chat, hit: null });
+      continue;
+    }
+    const hit = searchChat(chat, q);
+    if (hit) rows.push({ chat, hit });
+  }
+
+  if (!rows.length) {
+    const empty = document.createElement("li");
+    empty.className = "history-empty";
+    empty.textContent = q
+      ? `No chats match “${query.trim()}”.`
+      : "No previous chats yet.";
+    historyList.appendChild(empty);
+    return;
+  }
+
+  for (const { chat, hit } of rows) {
+    const li = document.createElement("li");
+    li.className =
+      "history-item" + (chat.id === store.activeId ? " active" : "");
+
+    const load = document.createElement("button");
+    load.type = "button";
+    load.className = "history-load";
+
+    const title = document.createElement("span");
+    title.className = "history-title";
+    title.textContent = chatTitle(chat);
+
+    const meta = document.createElement("span");
+    meta.className = "history-meta";
+    const n = chat.messages.length;
+    meta.textContent = hit
+      ? `${hit.count} matching message${hit.count === 1 ? "" : "s"} · ${formatChatDate(chat.updatedAt)}`
+      : `${n} message${n === 1 ? "" : "s"} · ${formatChatDate(chat.updatedAt)}`;
+
+    load.appendChild(title);
+    load.appendChild(meta);
+
+    if (hit) {
+      const snippet = document.createElement("span");
+      snippet.className = "history-snippet";
+      snippet.appendChild(
+        buildSnippet(chat.messages[hit.firstIndex].content, q),
+      );
+      load.appendChild(snippet);
+    }
+
+    load.addEventListener("click", () => {
+      loadChat(chat.id, hit ? hit.firstIndex : null);
+      closeHistory();
+    });
+
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "history-delete";
+    del.textContent = "×";
+    del.setAttribute("aria-label", `Delete chat: ${chatTitle(chat)}`);
+    del.addEventListener("click", () => deleteChat(chat.id));
+
+    li.appendChild(load);
+    li.appendChild(del);
+    historyList.appendChild(li);
+  }
+}
+
+function loadChat(id, focusIndex = null) {
+  const chat = store.chats.find((c) => c.id === id);
+  if (!chat) return;
+  if (currentAbort) currentAbort.abort();
+  store.activeId = id;
+  messages = chat.messages;
+  renderConversation(messages);
+  idbPutActiveId(id);
+  updateSystemPromptAvailability();
+  if (focusIndex != null) {
+    const target = chatEl.querySelectorAll(".message")[focusIndex];
+    if (target) {
+      target.scrollIntoView({ block: "center" });
+      target.classList.add("search-hit");
+    }
+  }
+  promptEl.focus();
+}
+
+function deleteChat(id) {
+  const wasActive = id === store.activeId;
+  store.chats = store.chats.filter((c) => c.id !== id);
+  if (wasActive) store.activeId = null;
+  idbDeleteChat(id);
+  renderChatList(historySearch.value);
+  if (wasActive) startNewChat();
+}
+
+function openHistory() {
+  historySearch.value = "";
+  renderChatList();
+  historyPanel.hidden = false;
+  historyBackdrop.hidden = false;
+  historySearch.focus();
+}
+
+function closeHistory() {
+  historyPanel.hidden = true;
+  historyBackdrop.hidden = true;
+}
+
+historyBtn.addEventListener("click", () => {
+  if (historyPanel.hidden) openHistory();
+  else closeHistory();
+});
+historyCloseBtn.addEventListener("click", closeHistory);
+historyBackdrop.addEventListener("click", closeHistory);
+
+historySearch.addEventListener("input", () => {
+  renderChatList(historySearch.value);
+});
+
+historySearch.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && historySearch.value) {
+    e.stopPropagation();
+    historySearch.value = "";
+    renderChatList();
+  }
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !historyPanel.hidden) closeHistory();
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    if (historyPanel.hidden) openHistory();
+    else closeHistory();
+  }
+});
 
 function getGenOptions() {
   const numPredict = parseInt(numPredictEl.value, 10);
@@ -572,6 +971,13 @@ composer.addEventListener("submit", async (e) => {
       markdown: false,
     });
 
+    pushMessage({
+      role: "user",
+      content: task
+        ? `I uploaded a ${label} named "${f.name}" and asked: ${task}`
+        : `I uploaded a ${label} named "${f.name}" for analysis.`,
+    });
+
     const assistantMsg = createMessage("assistant", "", {
       tag: `${label} • ${fileStreamToggle.checked ? "stream" : "sync"}`,
       state: "pending",
@@ -619,7 +1025,7 @@ composer.addEventListener("submit", async (e) => {
     : null;
 
   if (sysText && messages.length === 0) {
-    messages.push({ role: "system", content: sysText });
+    pushMessage({ role: "system", content: sysText });
     createMessage("system", sysText, {
       tag: "session prompt",
       markdown: true,
@@ -631,7 +1037,7 @@ composer.addEventListener("submit", async (e) => {
     markdown: false,
   });
 
-  messages.push({ role: "user", content: userText });
+  pushMessage({ role: "user", content: userText });
   promptEl.value = "";
   autoResizeTextarea();
 
@@ -639,62 +1045,83 @@ composer.addEventListener("submit", async (e) => {
 
   try {
     if (streamToggle.checked) {
-      await askStream(messages, options);
+      await askStream(apiMessages(), options);
     } else {
-      await askSync(messages, options);
+      await askSync(apiMessages(), options);
     }
   } finally {
     promptEl.focus();
   }
 });
 
-async function askSync(msgs, options) {
+function analysisForm(file, task, frames) {
+  const form = new FormData();
+  form.append("file", file);
+  if (task) form.append("task", task);
+  if (modelEl.value) form.append("model", modelEl.value);
+  if (frames != null) form.append("frames", frames);
+  return form;
+}
+
+function completeAssistantMessage(assistantMsg, tag, content) {
+  setBubbleState(assistantMsg.bubble, "done");
+  setBubbleContent(assistantMsg.bubble, content, { markdown: true });
+  setMessageTag(assistantMsg, tag);
+  appendAssistantMessageToHistory(content);
+  finalizeAssistantMessage(assistantMsg, content);
+}
+
+function showStreamError(assistantMsg, tagPrefix, errText, partial) {
+  setBubbleState(assistantMsg.bubble, "error");
+  setBubbleContent(
+    assistantMsg.bubble,
+    partial ? `${partial}\n\n_Error: ${errText}_` : `Error: ${errText}`,
+    { markdown: !!partial },
+  );
+  setMessageTag(assistantMsg, `${tagPrefix} • error`);
+}
+
+async function runAssistantRequest(assistantMsg, tagPrefix, req, handler) {
   setStreamingUI(true);
   currentAbort = new AbortController();
 
-  const assistantMsg = createMessage("assistant", "Working…", {
-    tag: "sync",
-    state: "pending",
-    markdown: false,
-  });
-
   try {
-    const res = await fetch("/api/chat-sync", {
+    const res = await fetch(req.url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: msgs, options, model: modelEl.value }),
+      headers: req.json ? { "Content-Type": "application/json" } : undefined,
+      body: req.json ? JSON.stringify(req.json) : req.body,
       signal: currentAbort.signal,
     });
 
-    if (!res.ok) {
+    if (!res.ok || (req.sse && !res.body)) {
       const errText = await safeReadError(res);
       setBubbleState(assistantMsg.bubble, "error");
-      setBubbleContent(assistantMsg.bubble, `Error ${res.status}: ${errText}`, {
-        markdown: false,
-      });
-      setMessageTag(assistantMsg, "sync • error");
+      setBubbleContent(
+        assistantMsg.bubble,
+        `Error ${res.status || ""}: ${errText || "Request failed"}`,
+        { markdown: false },
+      );
+      setMessageTag(assistantMsg, `${tagPrefix} • error`);
       return;
     }
 
-    const data = await res.json();
-    const content = data.content || "";
-
-    setBubbleState(assistantMsg.bubble, "done");
-    setBubbleContent(assistantMsg.bubble, content, { markdown: true });
-    setMessageTag(assistantMsg, "sync");
-    appendAssistantMessageToHistory(content);
-    finalizeAssistantMessage(assistantMsg, content);
+    await handler(res);
   } catch (e) {
+    const partial = (req.getPartial && req.getPartial()) || "";
     if (e?.name === "AbortError") {
       setBubbleState(assistantMsg.bubble, "canceled");
-      setBubbleContent(assistantMsg.bubble, "Canceled.", { markdown: false });
-      setMessageTag(assistantMsg, "sync • canceled");
+      setBubbleContent(assistantMsg.bubble, partial || "Canceled.", {
+        markdown: !!partial,
+      });
+      setMessageTag(assistantMsg, `${tagPrefix} • canceled`);
     } else {
       setBubbleState(assistantMsg.bubble, "error");
-      setBubbleContent(assistantMsg.bubble, `Error: ${e?.message || e}`, {
-        markdown: false,
-      });
-      setMessageTag(assistantMsg, "sync • error");
+      setBubbleContent(
+        assistantMsg.bubble,
+        partial || `Error: ${e?.message || e}`,
+        { markdown: !!partial },
+      );
+      setMessageTag(assistantMsg, `${tagPrefix} • error`);
     }
   } finally {
     setStreamingUI(false);
@@ -702,10 +1129,28 @@ async function askSync(msgs, options) {
   }
 }
 
-async function askStream(msgs, options) {
-  setStreamingUI(true);
-  currentAbort = new AbortController();
+async function askSync(msgs, options) {
+  const assistantMsg = createMessage("assistant", "Working…", {
+    tag: "sync",
+    state: "pending",
+    markdown: false,
+  });
 
+  await runAssistantRequest(
+    assistantMsg,
+    "sync",
+    {
+      url: "/api/chat-sync",
+      json: { messages: msgs, options, model: modelEl.value },
+    },
+    async (res) => {
+      const data = await res.json();
+      completeAssistantMessage(assistantMsg, "sync", data.content || "");
+    },
+  );
+}
+
+async function askStream(msgs, options) {
   const assistantMsg = createMessage("assistant", "", {
     tag: "stream",
     state: "pending",
@@ -716,366 +1161,173 @@ async function askStream(msgs, options) {
 
   let accumulated = "";
 
-  try {
-    const res = await fetch("/api/chat-stream", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: msgs, options, model: modelEl.value }),
-      signal: currentAbort.signal,
-    });
+  await runAssistantRequest(
+    assistantMsg,
+    "stream",
+    {
+      url: "/api/chat-stream",
+      json: { messages: msgs, options, model: modelEl.value },
+      sse: true,
+      getPartial: () => accumulated,
+    },
+    async (res) => {
+      setBubbleContent(assistantMsg.bubble, "", { markdown: true });
 
-    if (!res.ok || !res.body) {
-      const errText = await safeReadError(res);
-      setBubbleState(assistantMsg.bubble, "error");
-      setBubbleContent(
-        assistantMsg.bubble,
-        `Error ${res.status || ""}: ${errText || "Request failed"}`,
-        { markdown: false },
-      );
-      setMessageTag(assistantMsg, "stream • error");
-      return;
-    }
-
-    setBubbleContent(assistantMsg.bubble, "", { markdown: true });
-
-    await streamSSE(res, (payload) => {
-      if (payload.error) {
-        setBubbleState(assistantMsg.bubble, "error");
-        setBubbleContent(
-          assistantMsg.bubble,
-          accumulated
-            ? `${accumulated}\n\n_Error: ${payload.error}_`
-            : `Error: ${payload.error}`,
-          { markdown: !!accumulated },
-        );
-        setMessageTag(assistantMsg, "stream • error");
-      } else if (payload.done) {
-        setBubbleState(assistantMsg.bubble, "done");
-        setBubbleContent(assistantMsg.bubble, accumulated, { markdown: true });
-        setMessageTag(assistantMsg, "stream");
-        appendAssistantMessageToHistory(accumulated);
-        finalizeAssistantMessage(assistantMsg, accumulated);
-      } else if (payload.delta) {
-        accumulated += payload.delta;
-        setBubbleContent(assistantMsg.bubble, accumulated, { markdown: true });
-      }
-    });
-  } catch (e) {
-    if (e?.name === "AbortError") {
-      setBubbleState(assistantMsg.bubble, "canceled");
-      setBubbleContent(assistantMsg.bubble, accumulated || "Canceled.", {
-        markdown: !!accumulated,
+      await streamSSE(res, (payload) => {
+        if (payload.error) {
+          showStreamError(assistantMsg, "stream", payload.error, accumulated);
+        } else if (payload.done) {
+          completeAssistantMessage(assistantMsg, "stream", accumulated);
+        } else if (payload.delta) {
+          accumulated += payload.delta;
+          setBubbleContent(assistantMsg.bubble, accumulated, {
+            markdown: true,
+          });
+        }
       });
-      setMessageTag(assistantMsg, "stream • canceled");
-    } else {
-      setBubbleState(assistantMsg.bubble, "error");
-      setBubbleContent(
-        assistantMsg.bubble,
-        accumulated || `Error: ${e?.message || e}`,
-        { markdown: !!accumulated },
-      );
-      setMessageTag(assistantMsg, "stream • error");
-    }
-  } finally {
-    setStreamingUI(false);
-    currentAbort = null;
-  }
+    },
+  );
 }
 
 async function analyzeFileSyncToChat(file, task, assistantMsg) {
-  setStreamingUI(true);
-  currentAbort = new AbortController();
-
   setBubbleState(assistantMsg.bubble, "pending");
   setBubbleContent(assistantMsg.bubble, "Uploading and analyzing…", {
     markdown: false,
   });
 
-  const form = new FormData();
-  form.append("file", file);
-  if (task) form.append("task", task);
-  if (modelEl.value) form.append("model", modelEl.value);
-
-  try {
-    const res = await fetch("/api/analyze-file", {
-      method: "POST",
-      body: form,
-      signal: currentAbort.signal,
-    });
-
-    if (!res.ok) {
-      const errText = await safeReadError(res);
-      setBubbleState(assistantMsg.bubble, "error");
-      setBubbleContent(assistantMsg.bubble, `Error ${res.status}: ${errText}`, {
-        markdown: false,
-      });
-      setMessageTag(assistantMsg, "file • sync • error");
-      return;
-    }
-
-    const j = await res.json();
-    const result = j.result || "";
-
-    setBubbleState(assistantMsg.bubble, "done");
-    setBubbleContent(assistantMsg.bubble, result, { markdown: true });
-    setMessageTag(assistantMsg, "file • sync");
-    appendAssistantMessageToHistory(result);
-    finalizeAssistantMessage(assistantMsg, result);
-  } catch (e) {
-    if (e?.name === "AbortError") {
-      setBubbleState(assistantMsg.bubble, "canceled");
-      setBubbleContent(assistantMsg.bubble, "Canceled.", { markdown: false });
-      setMessageTag(assistantMsg, "file • sync • canceled");
-    } else {
-      setBubbleState(assistantMsg.bubble, "error");
-      setBubbleContent(assistantMsg.bubble, `Error: ${e?.message || e}`, {
-        markdown: false,
-      });
-      setMessageTag(assistantMsg, "file • sync • error");
-    }
-  } finally {
-    setStreamingUI(false);
-    currentAbort = null;
-  }
+  await runAssistantRequest(
+    assistantMsg,
+    "file • sync",
+    {
+      url: "/api/analyze-file",
+      body: analysisForm(file, task),
+    },
+    async (res) => {
+      const j = await res.json();
+      completeAssistantMessage(assistantMsg, "file • sync", j.result || "");
+    },
+  );
 }
 
 async function analyzeFileStreamToChat(file, task, assistantMsg) {
-  setStreamingUI(true);
-  currentAbort = new AbortController();
-
-  const form = new FormData();
-  form.append("file", file);
-  if (task) form.append("task", task);
-  if (modelEl.value) form.append("model", modelEl.value);
-
   let chunkText = "";
   let finalText = "";
+  const partial = () => buildFileAnalysisMarkdown(chunkText, finalText);
 
-  try {
-    const res = await fetch("/api/analyze-file-stream", {
-      method: "POST",
-      body: form,
-      signal: currentAbort.signal,
-    });
+  await runAssistantRequest(
+    assistantMsg,
+    "file • stream",
+    {
+      url: "/api/analyze-file-stream",
+      body: analysisForm(file, task),
+      sse: true,
+      getPartial: partial,
+    },
+    async (res) => {
+      setBubbleContent(assistantMsg.bubble, "", { markdown: true });
 
-    if (!res.ok || !res.body) {
-      const errText = await safeReadError(res);
-      setBubbleState(assistantMsg.bubble, "error");
-      setBubbleContent(
-        assistantMsg.bubble,
-        `Error ${res.status || ""}: ${errText || "Request failed"}`,
-        { markdown: false },
-      );
-      setMessageTag(assistantMsg, "file • stream • error");
-      return;
-    }
-
-    setBubbleContent(assistantMsg.bubble, "", { markdown: true });
-
-    await streamSSE(res, (payload) => {
-      if (payload.error) {
-        const combined = buildFileAnalysisMarkdown(chunkText, finalText);
-        setBubbleState(assistantMsg.bubble, "error");
-        setBubbleContent(
-          assistantMsg.bubble,
-          combined
-            ? `${combined}\n\n---\n\n_Error: ${payload.error}_`
-            : `Error: ${payload.error}`,
-          { markdown: !!combined },
-        );
-        setMessageTag(assistantMsg, "file • stream • error");
-        return;
-      }
-
-      if (payload.done) {
-        const combined = buildFileAnalysisMarkdown(chunkText, finalText);
-        setBubbleState(assistantMsg.bubble, "done");
-        setBubbleContent(assistantMsg.bubble, combined, { markdown: true });
-        setMessageTag(assistantMsg, "file • stream");
-        appendAssistantMessageToHistory(combined);
-        finalizeAssistantMessage(assistantMsg, combined);
-        return;
-      }
-
-      if (payload.stage === "chunk") {
-        chunkText += `\n\n## Chunk ${payload.index}/${payload.of}\n\n${payload.summary || ""}`;
-      } else if (payload.stage === "final") {
-        if (payload.delta) {
-          finalText += payload.delta;
-        } else if (payload.text) {
-          finalText = payload.text;
+      await streamSSE(res, (payload) => {
+        if (payload.error) {
+          showStreamError(
+            assistantMsg,
+            "file • stream",
+            payload.error,
+            partial(),
+          );
+          return;
         }
-      }
 
-      const combined = buildFileAnalysisMarkdown(chunkText, finalText);
-      setBubbleContent(assistantMsg.bubble, combined || "Working…", {
-        markdown: true,
+        if (payload.done) {
+          completeAssistantMessage(assistantMsg, "file • stream", partial());
+          return;
+        }
+
+        if (payload.stage === "chunk") {
+          chunkText += `\n\n## Chunk ${payload.index}/${payload.of}\n\n${payload.summary || ""}`;
+        } else if (payload.stage === "final") {
+          if (payload.delta) {
+            finalText += payload.delta;
+          } else if (payload.text) {
+            finalText = payload.text;
+          }
+        }
+
+        setBubbleContent(assistantMsg.bubble, partial() || "Working…", {
+          markdown: true,
+        });
       });
-    });
-  } catch (e) {
-    if (e?.name === "AbortError") {
-      const combined =
-        buildFileAnalysisMarkdown(chunkText, finalText) || "Canceled.";
-      setBubbleState(assistantMsg.bubble, "canceled");
-      setBubbleContent(assistantMsg.bubble, combined, {
-        markdown: combined !== "Canceled.",
-      });
-      setMessageTag(assistantMsg, "file • stream • canceled");
-    } else {
-      const fallback = buildFileAnalysisMarkdown(chunkText, finalText);
-      setBubbleState(assistantMsg.bubble, "error");
-      setBubbleContent(
-        assistantMsg.bubble,
-        fallback || `Error: ${e?.message || e}`,
-        { markdown: !!fallback },
-      );
-      setMessageTag(assistantMsg, "file • stream • error");
-    }
-  } finally {
-    setStreamingUI(false);
-    currentAbort = null;
-  }
+    },
+  );
 }
 
 async function analyzeVideoSyncToChat(file, task, assistantMsg) {
-  setStreamingUI(true);
-  currentAbort = new AbortController();
-
   setBubbleState(assistantMsg.bubble, "pending");
   setBubbleContent(assistantMsg.bubble, "Extracting frames and analyzing…", {
     markdown: false,
   });
 
-  const form = new FormData();
-  form.append("file", file);
-  if (task) form.append("task", task);
-  if (modelEl.value) form.append("model", modelEl.value);
-  form.append("frames", framesInput.value || "8");
-
-  try {
-    const res = await fetch("/api/analyze-video", {
-      method: "POST",
-      body: form,
-      signal: currentAbort.signal,
-    });
-
-    if (!res.ok) {
-      const errText = await safeReadError(res);
-      setBubbleState(assistantMsg.bubble, "error");
-      setBubbleContent(assistantMsg.bubble, `Error ${res.status}: ${errText}`, {
-        markdown: false,
-      });
-      setMessageTag(assistantMsg, "video • sync • error");
-      return;
-    }
-
-    const j = await res.json();
-    const result = j.result || "";
-
-    setBubbleState(assistantMsg.bubble, "done");
-    setBubbleContent(assistantMsg.bubble, result, { markdown: true });
-    setMessageTag(assistantMsg, `video • sync • ${j.frames || 0} frames`);
-    appendAssistantMessageToHistory(result);
-    finalizeAssistantMessage(assistantMsg, result);
-  } catch (e) {
-    if (e?.name === "AbortError") {
-      setBubbleState(assistantMsg.bubble, "canceled");
-      setBubbleContent(assistantMsg.bubble, "Canceled.", { markdown: false });
-      setMessageTag(assistantMsg, "video • sync • canceled");
-    } else {
-      setBubbleState(assistantMsg.bubble, "error");
-      setBubbleContent(assistantMsg.bubble, `Error: ${e?.message || e}`, {
-        markdown: false,
-      });
-      setMessageTag(assistantMsg, "video • sync • error");
-    }
-  } finally {
-    setStreamingUI(false);
-    currentAbort = null;
-  }
+  await runAssistantRequest(
+    assistantMsg,
+    "video • sync",
+    {
+      url: "/api/analyze-video",
+      body: analysisForm(file, task, framesInput.value || "8"),
+    },
+    async (res) => {
+      const j = await res.json();
+      completeAssistantMessage(
+        assistantMsg,
+        `video • sync • ${j.frames || 0} frames`,
+        j.result || "",
+      );
+    },
+  );
 }
 
 async function analyzeVideoStreamToChat(file, task, assistantMsg) {
-  setStreamingUI(true);
-  currentAbort = new AbortController();
-
-  const form = new FormData();
-  form.append("file", file);
-  if (task) form.append("task", task);
-  if (modelEl.value) form.append("model", modelEl.value);
-  form.append("frames", framesInput.value || "8");
-
   let accumulated = "";
   let frameCount = 0;
 
-  try {
-    setBubbleContent(assistantMsg.bubble, "Extracting frames…", {
-      markdown: false,
-    });
+  setBubbleContent(assistantMsg.bubble, "Extracting frames…", {
+    markdown: false,
+  });
 
-    const res = await fetch("/api/analyze-video-stream", {
-      method: "POST",
-      body: form,
-      signal: currentAbort.signal,
-    });
-
-    if (!res.ok || !res.body) {
-      const errText = await safeReadError(res);
-      setBubbleState(assistantMsg.bubble, "error");
-      setBubbleContent(
-        assistantMsg.bubble,
-        `Error ${res.status || ""}: ${errText || "Request failed"}`,
-        { markdown: false },
-      );
-      setMessageTag(assistantMsg, "video • stream • error");
-      return;
-    }
-
-    await streamSSE(res, (payload) => {
-      if (payload.error) {
-        setBubbleState(assistantMsg.bubble, "error");
-        setBubbleContent(
-          assistantMsg.bubble,
-          accumulated
-            ? `${accumulated}\n\n_Error: ${payload.error}_`
-            : `Error: ${payload.error}`,
-          { markdown: !!accumulated },
-        );
-        setMessageTag(assistantMsg, "video • stream • error");
-      } else if (payload.done) {
-        setBubbleState(assistantMsg.bubble, "done");
-        setBubbleContent(assistantMsg.bubble, accumulated, { markdown: true });
-        setMessageTag(assistantMsg, `video • stream • ${frameCount} frames`);
-        appendAssistantMessageToHistory(accumulated);
-        finalizeAssistantMessage(assistantMsg, accumulated);
-      } else if (payload.stage === "frames") {
-        frameCount = payload.frames || 0;
-        addTypingIndicator(assistantMsg.bubble);
-      } else if (payload.delta) {
-        accumulated += payload.delta;
-        setBubbleContent(assistantMsg.bubble, accumulated, { markdown: true });
-      }
-    });
-  } catch (e) {
-    if (e?.name === "AbortError") {
-      setBubbleState(assistantMsg.bubble, "canceled");
-      setBubbleContent(assistantMsg.bubble, accumulated || "Canceled.", {
-        markdown: !!accumulated,
+  await runAssistantRequest(
+    assistantMsg,
+    "video • stream",
+    {
+      url: "/api/analyze-video-stream",
+      body: analysisForm(file, task, framesInput.value || "8"),
+      sse: true,
+      getPartial: () => accumulated,
+    },
+    async (res) => {
+      await streamSSE(res, (payload) => {
+        if (payload.error) {
+          showStreamError(
+            assistantMsg,
+            "video • stream",
+            payload.error,
+            accumulated,
+          );
+        } else if (payload.done) {
+          completeAssistantMessage(
+            assistantMsg,
+            `video • stream • ${frameCount} frames`,
+            accumulated,
+          );
+        } else if (payload.stage === "frames") {
+          frameCount = payload.frames || 0;
+          addTypingIndicator(assistantMsg.bubble);
+        } else if (payload.delta) {
+          accumulated += payload.delta;
+          setBubbleContent(assistantMsg.bubble, accumulated, {
+            markdown: true,
+          });
+        }
       });
-      setMessageTag(assistantMsg, "video • stream • canceled");
-    } else {
-      setBubbleState(assistantMsg.bubble, "error");
-      setBubbleContent(
-        assistantMsg.bubble,
-        accumulated || `Error: ${e?.message || e}`,
-        { markdown: !!accumulated },
-      );
-      setMessageTag(assistantMsg, "video • stream • error");
-    }
-  } finally {
-    setStreamingUI(false);
-    currentAbort = null;
-  }
+    },
+  );
 }
 
 function buildFileAnalysisMarkdown(chunkText, finalText) {
@@ -1199,6 +1451,19 @@ promptEl.addEventListener("keydown", (e) => {
   }
 });
 
-renderEmptyState();
-updateSystemPromptAvailability();
-loadModels();
+(async () => {
+  try {
+    await initStore();
+  } catch (e) {
+    console.warn("IndexedDB unavailable; chats will not persist.", e);
+  }
+  const activeChatOnLoad = currentChat();
+  if (activeChatOnLoad) {
+    messages = activeChatOnLoad.messages;
+    renderConversation(messages);
+  } else {
+    renderEmptyState();
+  }
+  updateSystemPromptAvailability();
+  loadModels();
+})();

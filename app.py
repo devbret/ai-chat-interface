@@ -28,6 +28,7 @@ MAX_UPLOAD_MB        = _int_env("MAX_UPLOAD_MB", 10)
 MAX_VIDEO_UPLOAD_MB  = _int_env("MAX_VIDEO_UPLOAD_MB", 50)
 VIDEO_FRAMES         = _int_env("VIDEO_FRAMES", 8)
 VIDEO_FRAME_WIDTH    = _int_env("VIDEO_FRAME_WIDTH", 768)
+ANALYSIS_NUM_CTX     = _int_env("ANALYSIS_NUM_CTX", 32768)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = max(MAX_UPLOAD_MB, MAX_VIDEO_UPLOAD_MB) * 1024 * 1024
@@ -42,6 +43,11 @@ def _ollama_chat(messages, stream=False, options=None, model=None):
         "options": options or {}
     }
     return requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, stream=stream, timeout=600)
+
+def _enforce_upload_limit(limit_mb: int):
+    length = request.content_length
+    if length is not None and length > limit_mb * 1024 * 1024:
+        abort(413, description=f"Upload exceeds the {limit_mb} MB limit.")
 
 def _read_txt_from_upload(file_storage):
     name = (file_storage.filename or "").lower()
@@ -148,7 +154,7 @@ def _summarize_chunk(chunk: str, extra_instruction: str = "", model=None) -> str
             {"role": "user", "content": f"Summarize the following text:\n\n{chunk}"}
         ],
         stream=False,
-        options={"temperature": 0.2, "num_ctx": 32768, "num_predict": 512},
+        options={"temperature": 0.2, "num_ctx": ANALYSIS_NUM_CTX, "num_predict": 512},
         model=model
     )
     r.raise_for_status()
@@ -162,15 +168,41 @@ def _final_synthesis(summaries: List[str], user_task: str = "Provide a concise o
             {"role": "user", "content": f"{user_task}\n\nHere are section summaries:\n\n{joined}"}
         ],
         stream=False,
-        options={"temperature": 0.2, "num_ctx": 32768, "num_predict": -1},
+        options={"temperature": 0.2, "num_ctx": ANALYSIS_NUM_CTX, "num_predict": -1},
         model=model
     )
     r.raise_for_status()
     return r.json().get("message", {}).get("content", "").strip()
 
+def _raise_for_status_streaming(r):
+    if r.status_code >= 400:
+        try:
+            r.content
+        except Exception:
+            pass
+    r.raise_for_status()
+
+def _ollama_error_message(e: requests.RequestException) -> str:
+    resp = getattr(e, "response", None)
+    if resp is None:
+        return f"Upstream Ollama request failed: {e}"
+    detail = ""
+    try:
+        body = resp.json()
+        if isinstance(body, dict):
+            detail = str(body.get("error") or "").strip()
+    except Exception:
+        try:
+            detail = (resp.text or "").strip()
+        except Exception:
+            detail = ""
+    if detail:
+        return f"Ollama returned HTTP {resp.status_code}: {detail[:1000]}"
+    return f"Ollama returned HTTP {resp.status_code}: {resp.reason or 'error'}"
+
 @app.errorhandler(requests.RequestException)
 def handle_upstream_error(e):
-    return jsonify({"error": f"Upstream Ollama request failed: {e}"}), 502
+    return jsonify({"error": _ollama_error_message(e)}), 502
 
 @app.get("/")
 def home():
@@ -202,7 +234,7 @@ def chat_stream():
     def sse_from_ollama():
         try:
             with _ollama_chat(messages, stream=True, options=options, model=model) as r:
-                r.raise_for_status()
+                _raise_for_status_streaming(r)
                 for line in r.iter_lines():
                     if not line:
                         continue
@@ -215,7 +247,7 @@ def chat_stream():
                     if j.get("done"):
                         yield "data: {\"done\": true}\n\n"
         except requests.RequestException as e:
-            yield f"data: {json.dumps({'error': f'Ollama request failed: {e}'})}\n\n"
+            yield f"data: {json.dumps({'error': _ollama_error_message(e)})}\n\n"
 
     headers = {"Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive"}
     return Response(stream_with_context(sse_from_ollama()), headers=headers)
@@ -228,6 +260,7 @@ def list_models():
 
 @app.post("/api/analyze-file")
 def analyze_file_sync():
+    _enforce_upload_limit(MAX_UPLOAD_MB)
     if "file" not in request.files:
         abort(400, description="Missing file.")
     f = request.files["file"]
@@ -244,7 +277,7 @@ def analyze_file_sync():
             [{"role": "system", "content": sys},
              {"role": "user", "content": prompt}],
             stream=False,
-            options={"temperature": 0.2, "num_ctx": 32768, "num_predict": -1},
+            options={"temperature": 0.2, "num_ctx": ANALYSIS_NUM_CTX, "num_predict": -1},
             model=model
         )
         r.raise_for_status()
@@ -257,6 +290,7 @@ def analyze_file_sync():
 
 @app.post("/api/analyze-file-stream")
 def analyze_file_stream():
+    _enforce_upload_limit(MAX_UPLOAD_MB)
     if "file" not in request.files:
         abort(400, description="Missing file.")
     f = request.files["file"]
@@ -274,10 +308,10 @@ def analyze_file_stream():
                     [{"role": "system", "content": sys},
                      {"role": "user", "content": prompt}],
                     stream=True,
-                    options={"temperature": 0.2, "num_ctx": 32768, "num_predict": -1},
+                    options={"temperature": 0.2, "num_ctx": ANALYSIS_NUM_CTX, "num_predict": -1},
                     model=model
                 ) as r:
-                    r.raise_for_status()
+                    _raise_for_status_streaming(r)
                     assembled = []
                     for line in r.iter_lines():
                         if not line:
@@ -293,6 +327,9 @@ def analyze_file_stream():
                             yield f"data: {json.dumps({'stage':'final','text':text_final})}\n\n"
                             yield "data: {\"done\": true}\n\n"
                             return
+                yield f"data: {json.dumps({'stage':'final','text':''.join(assembled)})}\n\n"
+                yield "data: {\"done\": true}\n\n"
+                return
             summaries = []
             N = len(chunks)
             for i, c in enumerate(chunks, start=1):
@@ -303,13 +340,14 @@ def analyze_file_stream():
             yield f"data: {json.dumps({'stage':'final','text':final})}\n\n"
             yield "data: {\"done\": true}\n\n"
         except requests.RequestException as e:
-            yield f"data: {json.dumps({'error': f'Ollama request failed: {e}'})}\n\n"
+            yield f"data: {json.dumps({'error': _ollama_error_message(e)})}\n\n"
 
     headers = {"Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive"}
     return Response(stream_with_context(run()), headers=headers)
 
 @app.post("/api/analyze-video")
 def analyze_video_sync():
+    _enforce_upload_limit(MAX_VIDEO_UPLOAD_MB)
     if "file" not in request.files:
         abort(400, description="Missing file.")
     f = request.files["file"]
@@ -321,7 +359,7 @@ def analyze_video_sync():
     r = _ollama_chat(
         _video_messages(frames, task),
         stream=False,
-        options={"temperature": 0.2, "num_ctx": 32768, "num_predict": -1},
+        options={"temperature": 0.2, "num_ctx": ANALYSIS_NUM_CTX, "num_predict": -1},
         model=model
     )
     r.raise_for_status()
@@ -330,6 +368,7 @@ def analyze_video_sync():
 
 @app.post("/api/analyze-video-stream")
 def analyze_video_stream():
+    _enforce_upload_limit(MAX_VIDEO_UPLOAD_MB)
     if "file" not in request.files:
         abort(400, description="Missing file.")
     f = request.files["file"]
@@ -346,10 +385,10 @@ def analyze_video_stream():
             with _ollama_chat(
                 messages,
                 stream=True,
-                options={"temperature": 0.2, "num_ctx": 32768, "num_predict": -1},
+                options={"temperature": 0.2, "num_ctx": ANALYSIS_NUM_CTX, "num_predict": -1},
                 model=model
             ) as r:
-                r.raise_for_status()
+                _raise_for_status_streaming(r)
                 for line in r.iter_lines():
                     if not line:
                         continue
@@ -363,7 +402,7 @@ def analyze_video_stream():
                         yield "data: {\"done\": true}\n\n"
                         return
         except requests.RequestException as e:
-            yield f"data: {json.dumps({'error': f'Ollama request failed: {e}'})}\n\n"
+            yield f"data: {json.dumps({'error': _ollama_error_message(e)})}\n\n"
 
     headers = {"Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive"}
     return Response(stream_with_context(run()), headers=headers)

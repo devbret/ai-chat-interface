@@ -27,6 +27,17 @@
 
         <div class="toggles">
           <button
+            id="historyBtn"
+            type="button"
+            class="ghost-btn"
+            aria-haspopup="dialog"
+            aria-controls="historyPanel"
+            aria-label="Show previous chats"
+          >
+            Chats
+          </button>
+
+          <button
             id="newChatBtn"
             type="button"
             class="ghost-btn"
@@ -175,6 +186,37 @@
           </label>
         </div>
       </form>
+
+      <div id="historyBackdrop" class="history-backdrop" hidden></div>
+      <aside
+        id="historyPanel"
+        class="history-panel"
+        role="dialog"
+        aria-label="Previous chats"
+        hidden
+      >
+        <div class="history-head">
+          <h2>Previous chats</h2>
+          <button
+            id="historyCloseBtn"
+            type="button"
+            class="ghost-btn"
+            aria-label="Close chat history"
+          >
+            ✕
+          </button>
+        </div>
+        <div class="history-search">
+          <input
+            id="historySearch"
+            type="search"
+            placeholder="Search chats…"
+            aria-label="Search chats"
+            autocomplete="off"
+          />
+        </div>
+        <ul id="historyList" class="history-list"></ul>
+      </aside>
     </div>
 
     <script src="/static/vendor/marked.min.js"></script>
