@@ -177,14 +177,15 @@ header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   margin-bottom: 14px;
 }
 
 .header-left h1 {
   margin: 0;
-  font-size: 22px;
+  font-size: 20px;
   letter-spacing: 0.2px;
+  white-space: nowrap;
 }
 
 .subtitle {
@@ -198,7 +199,7 @@ header .toggles {
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
-  gap: 12px;
+  gap: 8px;
 }
 
 header .toggles label {
@@ -207,6 +208,11 @@ header .toggles label {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  white-space: nowrap;
+}
+
+.model-select select {
+  max-width: 150px;
 }
 
 .theme-toggle {

@@ -3,6 +3,7 @@ const composer = document.getElementById("composer");
 const promptEl = document.getElementById("prompt");
 const sysEl = document.getElementById("system");
 const streamToggle = document.getElementById("streamToggle");
+const toolsToggle = document.getElementById("toolsToggle");
 const sysToggle = document.getElementById("sysToggle");
 const modelEl = document.getElementById("modelSelect");
 const tempEl = document.getElementById("temp");
@@ -252,7 +253,7 @@ const EMPTY_STATE_HTML = `
     <div class="empty-hero">
       <div class="empty-badge" aria-hidden="true">💬</div>
       <h2>How can I help?</h2>
-      <p>Chat with your local model, or bring in a document or video to analyze — everything runs through your own Ollama instance. You can also drag &amp; drop a file anywhere.</p>
+      <p>Chat with your local model, or bring in a document or video to analyze - everything runs through your own Ollama instance. You can also drag &amp; drop a file anywhere.</p>
     </div>
 
     <div class="empty-cards">
@@ -455,11 +456,7 @@ async function resendEditedMessage(msgRef, text) {
 
   const options = getGenOptions();
   try {
-    if (streamToggle.checked) {
-      await askStream(apiMessages(), options);
-    } else {
-      await askSync(apiMessages(), options);
-    }
+    await sendChatRequest(apiMessages(), options);
   } finally {
     promptEl.focus();
   }
@@ -520,11 +517,7 @@ async function regenerateLast() {
 
   const options = getGenOptions();
   try {
-    if (streamToggle.checked) {
-      await askStream(apiMessages(), options);
-    } else {
-      await askSync(apiMessages(), options);
-    }
+    await sendChatRequest(apiMessages(), options);
   } finally {
     promptEl.focus();
   }
@@ -852,7 +845,11 @@ function renderConversation(msgs) {
       addEditButton(msgObj, m);
       addForkButton(msgObj, m);
     } else {
-      const msgObj = createMessage("assistant", m.content, {
+      const hasTrace = Array.isArray(m.toolTrace) && m.toolTrace.length;
+      const display = hasTrace
+        ? toolTranscriptMarkdown(m.toolTrace)
+        : m.content;
+      const msgObj = createMessage("assistant", display, {
         tag: m.model || "",
         state: "done",
         markdown: true,
@@ -1197,7 +1194,9 @@ function exportAllChats() {
     "application/json",
     JSON.stringify(payload, null, 2),
   );
-  footNote(`Exported ${store.chats.length} chat${store.chats.length === 1 ? "" : "s"}`);
+  footNote(
+    `Exported ${store.chats.length} chat${store.chats.length === 1 ? "" : "s"}`,
+  );
 }
 
 function chatToMarkdown(chat) {
@@ -1251,7 +1250,9 @@ async function importChats(file) {
     const skipped = cleaned.length - added.length;
     footNote(
       `Imported ${added.length} chat${added.length === 1 ? "" : "s"}` +
-        (skipped ? ` (${skipped} duplicate${skipped === 1 ? "" : "s"} skipped)` : ""),
+        (skipped
+          ? ` (${skipped} duplicate${skipped === 1 ? "" : "s"} skipped)`
+          : ""),
     );
   } catch (e) {
     footNote("Import failed: not a valid export file");
@@ -1354,7 +1355,8 @@ function renderWeekChart(weeks) {
   const yFor = (v) => yBase - (v / yMax) * plotH;
   const weekLabel = (start) =>
     new Date(start).toLocaleDateString([], { month: "short", day: "numeric" });
-  const ns = (tag) => document.createElementNS("http://www.w3.org/2000/svg", tag);
+  const ns = (tag) =>
+    document.createElementNS("http://www.w3.org/2000/svg", tag);
 
   const svg = ns("svg");
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
@@ -1541,6 +1543,7 @@ function setStreamingUI(isStreaming) {
   promptEl.disabled = isStreaming;
   sysEl.disabled = isStreaming;
   streamToggle.disabled = isStreaming;
+  toolsToggle.disabled = isStreaming;
   sysToggle.disabled = isStreaming;
   modelEl.disabled = isStreaming;
   tempEl.disabled = isStreaming;
@@ -1639,12 +1642,13 @@ composer.addEventListener("submit", async (e) => {
   const selected = getSelectedUpload();
   if (selected) {
     const { file: f, kind } = selected;
-    const label = kind === "video" ? "video" : kind === "image" ? "image" : "file";
+    const label =
+      kind === "video" ? "video" : kind === "image" ? "image" : "file";
     const task = [promptEl.value.trim(), taskInput.value.trim()]
       .filter(Boolean)
       .join("\n\n");
     const announce = task
-      ? `Analyze: ${f.name} — ${task}`
+      ? `Analyze: ${f.name} - ${task}`
       : `Analyze: ${f.name}`;
 
     const announceMsg = createMessage("user", announce, {
@@ -1743,11 +1747,7 @@ composer.addEventListener("submit", async (e) => {
   const options = getGenOptions();
 
   try {
-    if (streamToggle.checked) {
-      await askStream(apiMessages(), options);
-    } else {
-      await askSync(apiMessages(), options);
-    }
+    await sendChatRequest(apiMessages(), options);
   } finally {
     promptEl.focus();
   }
@@ -1890,6 +1890,207 @@ async function askStream(msgs, options) {
           setBubbleContent(assistantMsg.bubble, accumulated, {
             markdown: true,
           });
+        }
+      });
+    },
+  );
+}
+
+function sendChatRequest(msgs, options) {
+  if (toolsToggle.checked) {
+    return streamToggle.checked
+      ? askToolsStream(msgs, options)
+      : askToolsSync(msgs, options);
+  }
+  return streamToggle.checked
+    ? askStream(msgs, options)
+    : askSync(msgs, options);
+}
+
+function fenced(text, lang = "") {
+  const str = String(text ?? "");
+  const longest = Math.max(
+    2,
+    ...(str.match(/`+/g) || [""]).map((s) => s.length),
+  );
+  const fence = "`".repeat(longest + 1);
+  return `${fence}${lang}\n${str}\n${fence}`;
+}
+
+function escapeMarkdownText(text) {
+  return String(text).replace(/([\\`*_{}[\]<>()#+\-.!|~])/g, "\\$1");
+}
+
+function searchResultsMarkdown(result) {
+  const entries = String(result).trim().split("\n\n");
+  const items = [];
+  for (const entry of entries) {
+    const m = entry.match(
+      /^(\d+)\. ([^\n]+)\n\s+(https?:\/\/\S+)(?:\n[ \t]+(?!Page content:)([^\n]+))?(?:\n[ \t]+Page content:\n([\s\S]+))?$/,
+    );
+    if (!m) return null;
+    const url = m[3].replace(/\(/g, "%28").replace(/\)/g, "%29");
+    let item = `${m[1]}. [${escapeMarkdownText(m[2])}](${url})`;
+    if (m[4]) {
+      item += `\n   ${escapeMarkdownText(m[4].replace(/\s+/g, " ").trim())}`;
+    }
+    if (m[5]) {
+      const quoted = m[5]
+        .split("\n")
+        .map((ln) => ln.trim())
+        .filter(Boolean)
+        .map((ln) => `   > ${escapeMarkdownText(ln)}`)
+        .join("\n");
+      item += `\n\n${quoted}\n`;
+    }
+    items.push(item);
+  }
+  return items.length ? items.join("\n") : null;
+}
+
+function toolResultMarkdown(step) {
+  if (step.name === "search_web") {
+    const md = searchResultsMarkdown(step.result);
+    if (md) return md;
+  }
+  return fenced(step.result);
+}
+
+function toolStepMarkdown(step) {
+  const args = step.arguments || {};
+  const argsBlock =
+    step.name === "run_python" && typeof args.code === "string"
+      ? fenced(args.code, "python")
+      : fenced(JSON.stringify(args, null, 2), "json");
+  let md = `> ⚙️ **Tool call:** \`${step.name}\`\n\n${argsBlock}`;
+  if (step.result != null) {
+    md += `\n\n> ✅ **Result**\n\n${toolResultMarkdown(step)}`;
+  } else {
+    md += `\n\n> ⏳ *Running…*`;
+  }
+  return md;
+}
+
+function toolTranscriptMarkdown(trace) {
+  return (trace || [])
+    .map((item) => (item.type === "tool" ? toolStepMarkdown(item) : item.text))
+    .filter((s) => s && s.trim())
+    .join("\n\n");
+}
+
+function toolTraceFinalText(trace) {
+  return (trace || [])
+    .filter((item) => item.type === "text" && item.text.trim())
+    .map((item) => item.text.trim())
+    .join("\n\n");
+}
+
+function completeToolsMessage(assistantMsg, tagPrefix, trace, stopped) {
+  let display = toolTranscriptMarkdown(trace);
+  if (stopped === "max_iterations") {
+    display += `${display ? "\n\n" : ""}> ⚠️ *Stopped: tool iteration limit reached.*`;
+  }
+  const finalText = toolTraceFinalText(trace);
+  setBubbleState(assistantMsg.bubble, "done");
+  setBubbleContent(assistantMsg.bubble, display, { markdown: true });
+  setMessageTag(
+    assistantMsg,
+    modelEl.value ? `${tagPrefix} • ${modelEl.value}` : tagPrefix,
+  );
+  const stored = appendAssistantMessageToHistory(finalText, {
+    kind: "chat",
+    toolTrace: trace,
+  });
+  finalizeAssistantMessage(assistantMsg, finalText);
+  addForkButton(assistantMsg, stored);
+  addRegenerateButton(assistantMsg);
+}
+
+async function askToolsSync(msgs, options) {
+  const assistantMsg = createMessage("assistant", "Working…", {
+    tag: "tools",
+    state: "pending",
+    markdown: false,
+  });
+
+  await runAssistantRequest(
+    assistantMsg,
+    "tools",
+    {
+      url: "/api/chat-tools-sync",
+      json: { messages: msgs, options, model: modelEl.value },
+    },
+    async (res) => {
+      const data = await res.json();
+      completeToolsMessage(
+        assistantMsg,
+        "tools",
+        data.trace || [],
+        data.stopped,
+      );
+    },
+  );
+}
+
+async function askToolsStream(msgs, options) {
+  const assistantMsg = createMessage("assistant", "", {
+    tag: "tools",
+    state: "pending",
+    markdown: false,
+  });
+
+  addTypingIndicator(assistantMsg.bubble);
+
+  const trace = [];
+  const renderLive = () => {
+    setBubbleContent(assistantMsg.bubble, toolTranscriptMarkdown(trace), {
+      markdown: true,
+    });
+  };
+
+  await runAssistantRequest(
+    assistantMsg,
+    "tools",
+    {
+      url: "/api/chat-tools-stream",
+      json: { messages: msgs, options, model: modelEl.value },
+      sse: true,
+      getPartial: () => toolTranscriptMarkdown(trace),
+    },
+    async (res) => {
+      setBubbleContent(assistantMsg.bubble, "", { markdown: true });
+
+      await streamSSE(res, (payload) => {
+        if (payload.error) {
+          showStreamError(
+            assistantMsg,
+            "tools",
+            payload.error,
+            toolTranscriptMarkdown(trace),
+          );
+        } else if (payload.tool_call) {
+          trace.push({
+            type: "tool",
+            name: payload.tool_call.name,
+            arguments: payload.tool_call.arguments,
+          });
+          renderLive();
+        } else if (payload.tool_result) {
+          const pending = [...trace]
+            .reverse()
+            .find((item) => item.type === "tool" && item.result == null);
+          if (pending) pending.result = payload.tool_result.content;
+          renderLive();
+        } else if (payload.done) {
+          completeToolsMessage(assistantMsg, "tools", trace, payload.stopped);
+        } else if (payload.delta) {
+          const last = trace[trace.length - 1];
+          if (last && last.type === "text") {
+            last.text += payload.delta;
+          } else {
+            trace.push({ type: "text", text: payload.delta });
+          }
+          renderLive();
         }
       });
     },

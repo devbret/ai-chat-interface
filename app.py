@@ -1,10 +1,12 @@
-import os, json, base64, shutil, tempfile, subprocess
+import os, re, json, base64, shutil, tempfile, subprocess
 from typing import List
 from flask import Flask, request, render_template, jsonify, Response, stream_with_context, abort
 import requests
 from dotenv import load_dotenv
 
 load_dotenv()
+
+from tools import TOOL_DEFINITIONS, execute_tool
 
 def _require_env(name: str) -> str:
     val = os.getenv(name)
@@ -29,6 +31,7 @@ MAX_VIDEO_UPLOAD_MB  = _int_env("MAX_VIDEO_UPLOAD_MB", 50)
 VIDEO_FRAMES         = _int_env("VIDEO_FRAMES", 8)
 VIDEO_FRAME_WIDTH    = _int_env("VIDEO_FRAME_WIDTH", 768)
 ANALYSIS_NUM_CTX     = _int_env("ANALYSIS_NUM_CTX", 32768)
+TOOL_MAX_ITERATIONS  = _int_env("TOOL_MAX_ITERATIONS", 5)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = max(MAX_UPLOAD_MB, MAX_VIDEO_UPLOAD_MB) * 1024 * 1024
@@ -36,13 +39,15 @@ ALLOWED_EXTS = {".txt"}
 VIDEO_EXTS   = {".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"}
 IMAGE_EXTS   = {".png", ".jpg", ".jpeg", ".webp"}
 
-def _ollama_chat(messages, stream=False, options=None, model=None):
+def _ollama_chat(messages, stream=False, options=None, model=None, tools=None):
     payload = {
         "model": model or OLLAMA_MODEL,
         "messages": messages,
         "stream": stream,
         "options": options or {}
     }
+    if tools:
+        payload["tools"] = tools
     return requests.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload, stream=stream, timeout=600)
 
 def _enforce_upload_limit(limit_mb: int):
@@ -132,7 +137,7 @@ def _extract_video_frames(file_storage, num_frames: int = VIDEO_FRAMES,
 def _video_messages(frames: List[str], task: str = "") -> List[dict]:
     sys = ("You are a careful video analyst. You are given a sequence of still frames "
            "sampled in chronological order from a short video. Reason about what happens "
-           "across the clip — describe the setting, key objects, people, actions, any visible "
+           "across the clip - describe the setting, key objects, people, actions, any visible "
            "text, and how things change from frame to frame. Present one coherent account of "
            "the video rather than describing each frame in isolation.")
     user_text = task.strip() if task else "Describe what is happening in this video."
@@ -271,6 +276,146 @@ def chat_stream():
 
     headers = {"Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive"}
     return Response(stream_with_context(sse_from_ollama()), headers=headers)
+
+KNOWN_TOOL_NAMES = sorted(t["function"]["name"] for t in TOOL_DEFINITIONS)
+_TEXT_TOOL_CALL_RE = re.compile(
+    r"\s*(?:\[TOOL_CALLS\])?\s*(" + "|".join(map(re.escape, KNOWN_TOOL_NAMES)) + r")\[ARGS\]\s*"
+)
+_TEXT_CALL_SNIFF_CHARS = 64
+
+def _parse_text_tool_calls(content):
+    if not content:
+        return None
+    calls = []
+    decoder = json.JSONDecoder()
+    pos = 0
+    while True:
+        m = _TEXT_TOOL_CALL_RE.match(content, pos)
+        if not m:
+            break
+        try:
+            args, pos = decoder.raw_decode(content, m.end())
+        except ValueError:
+            return None
+        if not isinstance(args, dict):
+            return None
+        calls.append({"function": {"name": m.group(1), "arguments": args}})
+        while pos < len(content) and content[pos] in " \t\r\n,":
+            pos += 1
+    if not calls or content[pos:].strip():
+        return None
+    return calls
+
+def _tool_loop_events(messages, options, model):
+    convo = list(messages)
+    for _ in range(TOOL_MAX_ITERATIONS):
+        content_parts = []
+        tool_calls = []
+        mode = "buffer"
+        buffered = ""
+        with _ollama_chat(convo, stream=True, options=options, model=model, tools=TOOL_DEFINITIONS) as r:
+            _raise_for_status_streaming(r)
+            for line in r.iter_lines():
+                if not line:
+                    continue
+                try:
+                    j = json.loads(line.decode("utf-8"))
+                except Exception:
+                    continue
+                msg = j.get("message") or {}
+                piece = msg.get("content") or ""
+                if piece:
+                    content_parts.append(piece)
+                    if mode == "buffer":
+                        buffered += piece
+                        if _TEXT_TOOL_CALL_RE.match(buffered):
+                            mode = "swallow"
+                        elif len(buffered) >= _TEXT_CALL_SNIFF_CHARS:
+                            mode = "stream"
+                            yield {"delta": buffered}
+                    elif mode == "stream":
+                        yield {"delta": piece}
+                for tc in msg.get("tool_calls") or []:
+                    tool_calls.append(tc)
+                if j.get("done"):
+                    break
+        content = "".join(content_parts)
+        if not tool_calls:
+            parsed = _parse_text_tool_calls(content)
+            if parsed:
+                tool_calls = parsed
+                content = ""
+        if mode != "stream" and content:
+            yield {"delta": content}
+        if not tool_calls:
+            yield {"done": True}
+            return
+        convo.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
+        for tc in tool_calls:
+            fn = tc.get("function") or {}
+            name = fn.get("name", "")
+            arguments = fn.get("arguments") or {}
+            yield {"tool_call": {"name": name, "arguments": arguments}}
+            result = execute_tool(name, arguments)
+            yield {"tool_result": {"name": name, "content": result}}
+            convo.append({"role": "tool", "tool_name": name, "content": result})
+    yield {"done": True, "stopped": "max_iterations"}
+
+def _assemble_tool_trace(events):
+    trace = []
+    stopped = None
+    for ev in events:
+        if "delta" in ev:
+            if trace and trace[-1].get("type") == "text":
+                trace[-1]["text"] += ev["delta"]
+            else:
+                trace.append({"type": "text", "text": ev["delta"]})
+        elif "tool_call" in ev:
+            trace.append({"type": "tool",
+                          "name": ev["tool_call"]["name"],
+                          "arguments": ev["tool_call"]["arguments"]})
+        elif "tool_result" in ev:
+            for item in reversed(trace):
+                if item.get("type") == "tool" and "result" not in item:
+                    item["result"] = ev["tool_result"]["content"]
+                    break
+        elif ev.get("done"):
+            stopped = ev.get("stopped")
+    content = "\n\n".join(
+        item["text"].strip() for item in trace
+        if item.get("type") == "text" and item["text"].strip()
+    )
+    return content, trace, stopped
+
+@app.post("/api/chat-tools-sync")
+def chat_tools_sync():
+    data = request.get_json(force=True) or {}
+    messages = data.get("messages") or []
+    options  = data.get("options") or {}
+    model    = data.get("model") or OLLAMA_MODEL
+
+    content, trace, stopped = _assemble_tool_trace(_tool_loop_events(messages, options, model))
+    out = {"role": "assistant", "content": content, "trace": trace}
+    if stopped:
+        out["stopped"] = stopped
+    return jsonify(out)
+
+@app.post("/api/chat-tools-stream")
+def chat_tools_stream():
+    data = request.get_json(force=True) or {}
+    messages = data.get("messages") or []
+    options  = data.get("options") or {}
+    model    = data.get("model") or OLLAMA_MODEL
+
+    def run():
+        try:
+            for ev in _tool_loop_events(messages, options, model):
+                yield f"data: {json.dumps(ev)}\n\n"
+        except requests.RequestException as e:
+            yield f"data: {json.dumps({'error': _ollama_error_message(e)})}\n\n"
+
+    headers = {"Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive"}
+    return Response(stream_with_context(run()), headers=headers)
 
 @app.get("/api/models")
 def list_models():
