@@ -30,6 +30,15 @@ const historyList = document.getElementById("historyList");
 const historyCloseBtn = document.getElementById("historyCloseBtn");
 const historyBackdrop = document.getElementById("historyBackdrop");
 const historySearch = document.getElementById("historySearch");
+const exportAllBtn = document.getElementById("exportAllBtn");
+const importBtn = document.getElementById("importBtn");
+const importInput = document.getElementById("importInput");
+const historyFootNote = document.getElementById("historyFootNote");
+const statsBtn = document.getElementById("statsBtn");
+const statsModal = document.getElementById("statsModal");
+const statsBody = document.getElementById("statsBody");
+const statsCloseBtn = document.getElementById("statsCloseBtn");
+const statsBackdrop = document.getElementById("statsBackdrop");
 const scrollBottomBtn = document.getElementById("scrollBottomBtn");
 const dropOverlay = document.getElementById("dropOverlay");
 
@@ -367,6 +376,86 @@ function finalizeAssistantMessage(messageObj, rawText) {
   }
 }
 
+function addEditButton(messageObj, msgRef) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "copy-btn edit-btn";
+  btn.textContent = "Edit";
+  btn.addEventListener("click", () => beginEditMessage(msgRef, messageObj));
+  messageObj.meta.appendChild(btn);
+}
+
+function beginEditMessage(msgRef, messageObj) {
+  if (sendBtn.disabled) return;
+  if (messages.indexOf(msgRef) === -1) return;
+  const bubble = messageObj.bubble;
+  if (bubble.querySelector(".edit-area")) return;
+
+  bubble.textContent = "";
+  const area = document.createElement("div");
+  area.className = "edit-area";
+
+  const ta = document.createElement("textarea");
+  ta.value = msgRef.content;
+  ta.rows = Math.min(8, Math.max(2, msgRef.content.split("\n").length));
+
+  const actions = document.createElement("div");
+  actions.className = "edit-actions";
+
+  const resend = document.createElement("button");
+  resend.type = "button";
+  resend.textContent = "Resend";
+  resend.addEventListener("click", () => {
+    const text = ta.value.trim();
+    if (!text) return;
+    resendEditedMessage(msgRef, text);
+  });
+
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "link";
+  cancel.textContent = "Cancel";
+  cancel.addEventListener("click", () => {
+    setBubbleContent(bubble, msgRef.content, { markdown: false });
+  });
+
+  ta.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      resend.click();
+    } else if (e.key === "Escape") {
+      cancel.click();
+    }
+  });
+
+  actions.appendChild(resend);
+  actions.appendChild(cancel);
+  area.appendChild(ta);
+  area.appendChild(actions);
+  bubble.appendChild(area);
+  ta.focus();
+}
+
+async function resendEditedMessage(msgRef, text) {
+  const idx = messages.indexOf(msgRef);
+  if (idx === -1) return;
+  messages = messages.slice(0, idx);
+  pushMessage({ role: "user", content: text });
+  renderConversation(messages);
+  updateSystemPromptAvailability();
+
+  const options = getGenOptions();
+  try {
+    if (streamToggle.checked) {
+      await askStream(apiMessages(), options);
+    } else {
+      await askSync(apiMessages(), options);
+    }
+  } finally {
+    promptEl.focus();
+  }
+}
+
 function conversationStarted() {
   return messages.length > 0;
 }
@@ -491,12 +580,16 @@ function sanitizeMessages(list) {
 function sanitizeChat(c) {
   const msgs = sanitizeMessages(c?.messages);
   if (!msgs.length) return null;
-  return {
+  const chat = {
     id: String(c.id || genChatId()),
     createdAt: c.createdAt || Date.now(),
     updatedAt: c.updatedAt || c.createdAt || Date.now(),
     messages: msgs,
   };
+  if (typeof c.title === "string" && c.title.trim()) {
+    chat.title = c.title.trim();
+  }
+  return chat;
 }
 
 function idbRequest(req) {
@@ -639,8 +732,10 @@ function saveChat() {
 }
 
 function pushMessage(msg) {
-  messages.push({ ...msg, time: formatTime() });
+  const stored = { ...msg, time: formatTime(), ts: Date.now() };
+  messages.push(stored);
   saveChat();
+  return stored;
 }
 
 function apiMessages() {
@@ -649,6 +744,7 @@ function apiMessages() {
 
 function appendAssistantMessageToHistory(content) {
   pushMessage({ role: "assistant", content });
+  maybeAutoTitle(currentChat());
 }
 
 function renderConversation(msgs) {
@@ -661,7 +757,11 @@ function renderConversation(msgs) {
         time: m.time,
       });
     } else if (m.role === "user") {
-      createMessage("user", m.content, { tag: "chat", time: m.time });
+      const msgObj = createMessage("user", m.content, {
+        tag: "chat",
+        time: m.time,
+      });
+      addEditButton(msgObj, m);
     } else {
       const msgObj = createMessage("assistant", m.content, {
         state: "done",
@@ -674,11 +774,61 @@ function renderConversation(msgs) {
 }
 
 function chatTitle(chat) {
+  if (chat.title) return chat.title;
   const firstUser = chat.messages.find((m) => m.role === "user");
   const text = (firstUser?.content || "Untitled chat")
     .replace(/\s+/g, " ")
     .trim();
   return text.length > 60 ? text.slice(0, 60) + "…" : text;
+}
+
+const titlesInFlight = new Set();
+
+function cleanTitle(raw) {
+  const s = (raw || "")
+    .split("\n")[0]
+    .replace(/^\s*title\s*:\s*/i, "")
+    .replace(/["“”'’`*_#]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[.:!,;]+$/, "");
+  return s.length > 60 ? s.slice(0, 60).trim() + "…" : s;
+}
+
+function maybeAutoTitle(chat) {
+  if (!chat || chat.title || titlesInFlight.has(chat.id)) return;
+  const firstUser = chat.messages.find((m) => m.role === "user");
+  const firstAssistant = chat.messages.find((m) => m.role === "assistant");
+  if (!firstUser || !firstAssistant) return;
+
+  titlesInFlight.add(chat.id);
+  fetch("/api/chat-sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      messages: [
+        {
+          role: "user",
+          content:
+            "Write a short title (3-6 words) for this conversation. Reply with only the title, no quotes.\n\n" +
+            `User: ${firstUser.content.slice(0, 500)}\n\n` +
+            `Assistant: ${firstAssistant.content.slice(0, 500)}`,
+        },
+      ],
+      model: modelEl.value,
+      options: { temperature: 0.2, num_predict: 30 },
+    }),
+  })
+    .then((res) => (res.ok ? res.json() : null))
+    .then((data) => {
+      const title = cleanTitle(data?.content);
+      if (!title || chat.title) return;
+      chat.title = title;
+      idbPutChat(chat);
+      if (!historyPanel.hidden) renderChatList(historySearch.value);
+    })
+    .catch(() => {})
+    .finally(() => titlesInFlight.delete(chat.id));
 }
 
 function formatChatDate(ts) {
@@ -779,17 +929,68 @@ function renderChatList(query = "") {
       closeHistory();
     });
 
+    const exportBtn = document.createElement("button");
+    exportBtn.type = "button";
+    exportBtn.className = "history-action";
+    exportBtn.textContent = "↓";
+    exportBtn.title = "Export as Markdown";
+    exportBtn.setAttribute("aria-label", `Export chat: ${chatTitle(chat)}`);
+    exportBtn.addEventListener("click", () => exportChatMarkdown(chat));
+
+    const renameBtn = document.createElement("button");
+    renameBtn.type = "button";
+    renameBtn.className = "history-action";
+    renameBtn.textContent = "✎";
+    renameBtn.title = "Rename";
+    renameBtn.setAttribute("aria-label", `Rename chat: ${chatTitle(chat)}`);
+    renameBtn.addEventListener("click", () => beginRename(chat, title));
+
     const del = document.createElement("button");
     del.type = "button";
-    del.className = "history-delete";
+    del.className = "history-action history-delete";
     del.textContent = "×";
+    del.title = "Delete";
     del.setAttribute("aria-label", `Delete chat: ${chatTitle(chat)}`);
     del.addEventListener("click", () => deleteChat(chat.id));
 
     li.appendChild(load);
+    li.appendChild(exportBtn);
+    li.appendChild(renameBtn);
     li.appendChild(del);
     historyList.appendChild(li);
   }
+}
+
+function beginRename(chat, titleEl) {
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "history-rename";
+  input.value = chatTitle(chat);
+  titleEl.replaceWith(input);
+  input.focus();
+  input.select();
+
+  let settled = false;
+  const finish = (commit) => {
+    if (settled) return;
+    settled = true;
+    if (commit) {
+      const v = input.value.replace(/\s+/g, " ").trim();
+      if (v) {
+        chat.title = v;
+        idbPutChat(chat);
+      }
+    }
+    renderChatList(historySearch.value);
+  };
+
+  input.addEventListener("click", (e) => e.stopPropagation());
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") finish(true);
+    else if (e.key === "Escape") finish(false);
+  });
+  input.addEventListener("blur", () => finish(true));
 }
 
 function loadChat(id, focusIndex = null) {
@@ -853,13 +1054,381 @@ historySearch.addEventListener("keydown", (e) => {
 });
 
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !historyPanel.hidden) closeHistory();
+  if (e.key === "Escape") {
+    if (!statsModal.hidden) {
+      closeStats();
+      return;
+    }
+    if (!historyPanel.hidden) closeHistory();
+  }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
     e.preventDefault();
     if (historyPanel.hidden) openHistory();
     else closeHistory();
   }
 });
+
+let footNoteTimer = null;
+
+function footNote(text) {
+  historyFootNote.textContent = text;
+  clearTimeout(footNoteTimer);
+  footNoteTimer = setTimeout(() => {
+    historyFootNote.textContent = "";
+  }, 4000);
+}
+
+function downloadBlob(name, mime, text) {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function exportAllChats() {
+  const stamp = new Date().toISOString().slice(0, 10);
+  const payload = {
+    app: "ai-chat-interface",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    chats: store.chats,
+  };
+  downloadBlob(
+    `ai-chats-${stamp}.json`,
+    "application/json",
+    JSON.stringify(payload, null, 2),
+  );
+  footNote(`Exported ${store.chats.length} chat${store.chats.length === 1 ? "" : "s"}`);
+}
+
+function chatToMarkdown(chat) {
+  const roleNames = { system: "System", user: "User", assistant: "Assistant" };
+  const lines = [
+    `# ${chatTitle(chat)}`,
+    "",
+    `Exported ${new Date().toLocaleString()} · ${chat.messages.length} messages`,
+  ];
+  for (const m of chat.messages) {
+    lines.push(
+      "",
+      "---",
+      "",
+      `**${roleNames[m.role]}**${m.time ? ` · ${m.time}` : ""}`,
+      "",
+      m.content,
+    );
+  }
+  return lines.join("\n") + "\n";
+}
+
+function exportChatMarkdown(chat) {
+  const slug =
+    chatTitle(chat)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 40) || "chat";
+  downloadBlob(`${slug}.md`, "text/markdown", chatToMarkdown(chat));
+}
+
+async function importChats(file) {
+  try {
+    const parsed = JSON.parse(await file.text());
+    const incoming = Array.isArray(parsed) ? parsed : parsed?.chats;
+    const cleaned = (Array.isArray(incoming) ? incoming : [])
+      .map(sanitizeChat)
+      .filter(Boolean);
+    if (!cleaned.length) {
+      footNote("Nothing to import: no valid chats in file");
+      return;
+    }
+    const known = new Set(store.chats.map((c) => c.id));
+    const added = cleaned.filter((c) => !known.has(c.id));
+    for (const c of added) {
+      store.chats.push(c);
+      idbPutChat(c);
+    }
+    renderChatList(historySearch.value);
+    const skipped = cleaned.length - added.length;
+    footNote(
+      `Imported ${added.length} chat${added.length === 1 ? "" : "s"}` +
+        (skipped ? ` (${skipped} duplicate${skipped === 1 ? "" : "s"} skipped)` : ""),
+    );
+  } catch (e) {
+    footNote("Import failed: not a valid export file");
+  }
+}
+
+exportAllBtn.addEventListener("click", exportAllChats);
+importBtn.addEventListener("click", () => importInput.click());
+importInput.addEventListener("change", () => {
+  const f = importInput.files?.[0];
+  if (f) importChats(f);
+  importInput.value = "";
+});
+
+function compactNumber(n) {
+  if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "K";
+  return String(n);
+}
+
+function weekStart(ts) {
+  const d = new Date(ts);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return d.getTime();
+}
+
+function computeStats() {
+  let messagesTotal = 0;
+  let words = 0;
+  for (const c of store.chats) {
+    messagesTotal += c.messages.length;
+    for (const m of c.messages) {
+      words += m.content.split(/\s+/).filter(Boolean).length;
+    }
+  }
+
+  const weekMs = 7 * 24 * 60 * 60 * 1000;
+  const thisWeek = weekStart(Date.now());
+  const weeks = [];
+  for (let i = 7; i >= 0; i--) {
+    weeks.push({ start: thisWeek - i * weekMs, count: 0 });
+  }
+  for (const c of store.chats) {
+    const w = weeks.find((x) => x.start === weekStart(c.createdAt));
+    if (w) w.count++;
+  }
+
+  return {
+    chats: store.chats.length,
+    messages: messagesTotal,
+    words,
+    avg: store.chats.length
+      ? Math.round((messagesTotal / store.chats.length) * 10) / 10
+      : 0,
+    weeks,
+  };
+}
+
+function statTile(label, value) {
+  const tile = document.createElement("div");
+  tile.className = "stat-tile";
+  const v = document.createElement("div");
+  v.className = "stat-value";
+  v.textContent = value;
+  const l = document.createElement("div");
+  l.className = "stat-label";
+  l.textContent = label;
+  tile.appendChild(v);
+  tile.appendChild(l);
+  return tile;
+}
+
+function renderWeekChart(weeks) {
+  const wrap = document.createElement("div");
+  wrap.className = "stats-chart";
+
+  const heading = document.createElement("div");
+  heading.className = "stats-chart-title";
+  heading.textContent = "Chats per week";
+  const sub = document.createElement("div");
+  sub.className = "stats-chart-sub";
+  sub.textContent = "Last 8 weeks";
+  wrap.appendChild(heading);
+  wrap.appendChild(sub);
+
+  const W = 480;
+  const H = 190;
+  const L = 34;
+  const R = 8;
+  const T = 14;
+  const B = 26;
+  const plotW = W - L - R;
+  const plotH = H - T - B;
+  const yBase = T + plotH;
+  const maxCount = Math.max(...weeks.map((w) => w.count));
+  const yMax = Math.max(4, Math.ceil(maxCount / 2) * 2);
+  const bandW = plotW / weeks.length;
+  const colW = Math.min(24, Math.floor(bandW * 0.6));
+  const yFor = (v) => yBase - (v / yMax) * plotH;
+  const weekLabel = (start) =>
+    new Date(start).toLocaleDateString([], { month: "short", day: "numeric" });
+  const ns = (tag) => document.createElementNS("http://www.w3.org/2000/svg", tag);
+
+  const svg = ns("svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("class", "stats-svg");
+  svg.setAttribute("role", "img");
+  svg.setAttribute(
+    "aria-label",
+    "Column chart of chats created per week over the last 8 weeks",
+  );
+
+  for (const tick of [0, yMax / 2, yMax]) {
+    const y = yFor(tick);
+    const line = ns("line");
+    line.setAttribute("x1", L);
+    line.setAttribute("x2", W - R);
+    line.setAttribute("y1", y);
+    line.setAttribute("y2", y);
+    line.setAttribute("class", "chart-grid");
+    svg.appendChild(line);
+
+    const t = ns("text");
+    t.setAttribute("x", L - 6);
+    t.setAttribute("y", y + 3);
+    t.setAttribute("text-anchor", "end");
+    t.setAttribute("class", "chart-tick");
+    t.textContent = String(tick);
+    svg.appendChild(t);
+  }
+
+  const tip = document.createElement("div");
+  tip.className = "chart-tip";
+  tip.hidden = true;
+  const tipValue = document.createElement("strong");
+  const tipLabel = document.createElement("span");
+  tip.appendChild(tipValue);
+  tip.appendChild(tipLabel);
+
+  weeks.forEach((w, i) => {
+    const bandX = L + i * bandW;
+    const x = bandX + (bandW - colW) / 2;
+    const yTop = yFor(w.count);
+
+    let col = null;
+    if (w.count > 0) {
+      const r = Math.min(4, yBase - yTop);
+      col = ns("path");
+      col.setAttribute(
+        "d",
+        `M ${x} ${yBase} L ${x} ${yTop + r} Q ${x} ${yTop} ${x + r} ${yTop} ` +
+          `L ${x + colW - r} ${yTop} Q ${x + colW} ${yTop} ${x + colW} ${yTop + r} ` +
+          `L ${x + colW} ${yBase} Z`,
+      );
+      col.setAttribute("class", "chart-col");
+      svg.appendChild(col);
+    }
+
+    if (i === weeks.length - 1 && w.count > 0) {
+      const cap = ns("text");
+      cap.setAttribute("x", x + colW / 2);
+      cap.setAttribute("y", yTop - 5);
+      cap.setAttribute("text-anchor", "middle");
+      cap.setAttribute("class", "chart-cap");
+      cap.textContent = String(w.count);
+      svg.appendChild(cap);
+    }
+
+    const xl = ns("text");
+    xl.setAttribute("x", bandX + bandW / 2);
+    xl.setAttribute("y", H - 8);
+    xl.setAttribute("text-anchor", "middle");
+    xl.setAttribute("class", "chart-tick");
+    xl.textContent = weekLabel(w.start);
+    svg.appendChild(xl);
+
+    const hit = ns("rect");
+    hit.setAttribute("x", bandX);
+    hit.setAttribute("y", T);
+    hit.setAttribute("width", bandW);
+    hit.setAttribute("height", plotH);
+    hit.setAttribute("class", "chart-hit");
+    hit.setAttribute("tabindex", "0");
+    hit.setAttribute(
+      "aria-label",
+      `Week of ${weekLabel(w.start)}: ${w.count} chat${w.count === 1 ? "" : "s"}`,
+    );
+    const show = () => {
+      tipValue.textContent = `${w.count} chat${w.count === 1 ? "" : "s"}`;
+      tipLabel.textContent = `Week of ${weekLabel(w.start)}`;
+      tip.hidden = false;
+      tip.style.left = `${((bandX + bandW / 2) / W) * 100}%`;
+      tip.style.top = `${(yTop / H) * 100}%`;
+      if (col) col.classList.add("hover");
+    };
+    const hide = () => {
+      tip.hidden = true;
+      if (col) col.classList.remove("hover");
+    };
+    hit.addEventListener("pointerenter", show);
+    hit.addEventListener("pointerleave", hide);
+    hit.addEventListener("focus", show);
+    hit.addEventListener("blur", hide);
+    svg.appendChild(hit);
+  });
+
+  const plot = document.createElement("div");
+  plot.className = "chart-plot";
+  plot.appendChild(svg);
+  plot.appendChild(tip);
+  wrap.appendChild(plot);
+
+  const details = document.createElement("details");
+  details.className = "stats-table";
+  const summary = document.createElement("summary");
+  summary.textContent = "View as table";
+  details.appendChild(summary);
+  const table = document.createElement("table");
+  const head = document.createElement("tr");
+  for (const hText of ["Week of", "Chats"]) {
+    const th = document.createElement("th");
+    th.textContent = hText;
+    head.appendChild(th);
+  }
+  table.appendChild(head);
+  for (const w of weeks) {
+    const tr = document.createElement("tr");
+    const tdWeek = document.createElement("td");
+    tdWeek.textContent = weekLabel(w.start);
+    const tdCount = document.createElement("td");
+    tdCount.textContent = String(w.count);
+    tr.appendChild(tdWeek);
+    tr.appendChild(tdCount);
+    table.appendChild(tr);
+  }
+  details.appendChild(table);
+  wrap.appendChild(details);
+
+  return wrap;
+}
+
+function renderStats() {
+  statsBody.textContent = "";
+  const s = computeStats();
+
+  const tiles = document.createElement("div");
+  tiles.className = "stats-tiles";
+  tiles.appendChild(statTile("Chats", compactNumber(s.chats)));
+  tiles.appendChild(statTile("Messages", compactNumber(s.messages)));
+  tiles.appendChild(statTile("Words exchanged", compactNumber(s.words)));
+  tiles.appendChild(statTile("Avg messages per chat", String(s.avg)));
+  statsBody.appendChild(tiles);
+
+  statsBody.appendChild(renderWeekChart(s.weeks));
+}
+
+function openStats() {
+  renderStats();
+  statsModal.hidden = false;
+  statsBackdrop.hidden = false;
+}
+
+function closeStats() {
+  statsModal.hidden = true;
+  statsBackdrop.hidden = true;
+}
+
+statsBtn.addEventListener("click", openStats);
+statsCloseBtn.addEventListener("click", closeStats);
+statsBackdrop.addEventListener("click", closeStats);
 
 function getGenOptions() {
   const numPredict = parseInt(numPredictEl.value, 10);
@@ -1032,12 +1601,13 @@ composer.addEventListener("submit", async (e) => {
     });
   }
 
-  createMessage("user", userText, {
+  const userMsgObj = createMessage("user", userText, {
     tag: "chat",
     markdown: false,
   });
 
-  pushMessage({ role: "user", content: userText });
+  const storedUserMsg = pushMessage({ role: "user", content: userText });
+  addEditButton(userMsgObj, storedUserMsg);
   promptEl.value = "";
   autoResizeTextarea();
 

@@ -206,7 +206,7 @@ def handle_upstream_error(e):
 
 @app.get("/")
 def home():
-    return render_template("index.html", model=OLLAMA_MODEL)
+    return render_template("index.html", model=OLLAMA_MODEL, num_ctx_max=ANALYSIS_NUM_CTX)
 
 @app.post("/api/chat-sync")
 def chat_sync():
