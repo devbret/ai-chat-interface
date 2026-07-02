@@ -11,6 +11,8 @@ const numCtxEl = document.getElementById("numCtx");
 
 const attachBtn = document.getElementById("attachBtn");
 const fileInput = document.getElementById("fileInput");
+const attachImageBtn = document.getElementById("attachImageBtn");
+const imageInput = document.getElementById("imageInput");
 const attachVideoBtn = document.getElementById("attachVideoBtn");
 const videoInput = document.getElementById("videoInput");
 const fileBadge = document.getElementById("fileBadge");
@@ -43,6 +45,7 @@ const scrollBottomBtn = document.getElementById("scrollBottomBtn");
 const dropOverlay = document.getElementById("dropOverlay");
 
 const VIDEO_EXTS = [".mp4", ".mov", ".webm", ".mkv", ".avi", ".m4v"];
+const IMAGE_EXTS = [".png", ".jpg", ".jpeg", ".webp"];
 const TXT_EXTS = [".txt"];
 
 let messages = [];
@@ -263,6 +266,11 @@ const EMPTY_STATE_HTML = `
         <span class="empty-card-title">Analyze a document</span>
         <span class="empty-card-desc">Summarize or extract from a .txt file.</span>
       </button>
+      <button type="button" class="empty-card" data-action="image">
+        <span class="empty-card-icon" aria-hidden="true">🖼️</span>
+        <span class="empty-card-title">Analyze an image</span>
+        <span class="empty-card-desc">Describe or answer questions about a picture.</span>
+      </button>
       <button type="button" class="empty-card" data-action="video">
         <span class="empty-card-icon" aria-hidden="true">🎬</span>
         <span class="empty-card-title">Analyze a video</span>
@@ -291,6 +299,7 @@ function renderEmptyState() {
     if (card) {
       const action = card.dataset.action;
       if (action === "txt") attachBtn.click();
+      else if (action === "image") attachImageBtn.click();
       else if (action === "video") attachVideoBtn.click();
       else promptEl.focus();
       return;
@@ -456,6 +465,71 @@ async function resendEditedMessage(msgRef, text) {
   }
 }
 
+function addForkButton(messageObj, msgRef) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "copy-btn fork-btn";
+  btn.textContent = "Fork";
+  btn.title = "Branch a new chat from here";
+  btn.addEventListener("click", () => forkChatAt(msgRef));
+  messageObj.meta.appendChild(btn);
+}
+
+function forkChatAt(msgRef) {
+  if (sendBtn.disabled) return;
+  const idx = messages.indexOf(msgRef);
+  if (idx === -1) return;
+  const source = currentChat();
+  const chat = {
+    id: genChatId(),
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    messages: messages.slice(0, idx + 1).map((m) => ({ ...m })),
+  };
+  if (source?.title) chat.title = `${source.title} (fork)`;
+  store.chats.push(chat);
+  store.activeId = chat.id;
+  idbPutChat(chat);
+  idbPutActiveId(chat.id);
+  messages = chat.messages;
+  renderConversation(messages);
+  updateSystemPromptAvailability();
+  promptEl.focus();
+}
+
+function addRegenerateButton(messageObj) {
+  chatEl.querySelectorAll(".regen-btn").forEach((b) => b.remove());
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "copy-btn regen-btn";
+  btn.textContent = "Regenerate";
+  btn.title = "Remove this reply and generate a new one";
+  btn.addEventListener("click", regenerateLast);
+  messageObj.meta.appendChild(btn);
+}
+
+async function regenerateLast() {
+  if (sendBtn.disabled) return;
+  if (!messages.length || messages[messages.length - 1].role !== "assistant") {
+    return;
+  }
+  messages = messages.slice(0, -1);
+  saveChat();
+  renderConversation(messages);
+  updateSystemPromptAvailability();
+
+  const options = getGenOptions();
+  try {
+    if (streamToggle.checked) {
+      await askStream(apiMessages(), options);
+    } else {
+      await askSync(apiMessages(), options);
+    }
+  } finally {
+    promptEl.focus();
+  }
+}
+
 function conversationStarted() {
   return messages.length > 0;
 }
@@ -521,10 +595,17 @@ function flashBadge(text) {
 function acceptDroppedFile(file) {
   if (hasExt(file.name, VIDEO_EXTS)) {
     fileInput.value = "";
+    imageInput.value = "";
     setInputFile(videoInput, file);
+    showFileBadge(file.name);
+  } else if (hasExt(file.name, IMAGE_EXTS)) {
+    fileInput.value = "";
+    videoInput.value = "";
+    setInputFile(imageInput, file);
     showFileBadge(file.name);
   } else if (hasExt(file.name, TXT_EXTS)) {
     videoInput.value = "";
+    imageInput.value = "";
     setInputFile(fileInput, file);
     showFileBadge(file.name);
   } else {
@@ -742,13 +823,20 @@ function apiMessages() {
   return messages.map(({ role, content }) => ({ role, content }));
 }
 
-function appendAssistantMessageToHistory(content) {
-  pushMessage({ role: "assistant", content });
+function appendAssistantMessageToHistory(content, extra = {}) {
+  const stored = pushMessage({
+    role: "assistant",
+    content,
+    model: modelEl.value,
+    ...extra,
+  });
   maybeAutoTitle(currentChat());
+  return stored;
 }
 
 function renderConversation(msgs) {
   chatEl.innerHTML = "";
+  const last = msgs[msgs.length - 1];
   for (const m of msgs) {
     if (m.role === "system") {
       createMessage("system", m.content, {
@@ -762,13 +850,19 @@ function renderConversation(msgs) {
         time: m.time,
       });
       addEditButton(msgObj, m);
+      addForkButton(msgObj, m);
     } else {
       const msgObj = createMessage("assistant", m.content, {
+        tag: m.model || "",
         state: "done",
         markdown: true,
         time: m.time,
       });
       finalizeAssistantMessage(msgObj, m.content);
+      addForkButton(msgObj, m);
+      if (m === last && m.kind !== "analysis") {
+        addRegenerateButton(msgObj);
+      }
     }
   }
 }
@@ -1455,6 +1549,8 @@ function setStreamingUI(isStreaming) {
 
   attachBtn.disabled = isStreaming;
   fileInput.disabled = isStreaming;
+  attachImageBtn.disabled = isStreaming;
+  imageInput.disabled = isStreaming;
   attachVideoBtn.disabled = isStreaming;
   videoInput.disabled = isStreaming;
   taskInput.disabled = isStreaming;
@@ -1470,11 +1566,24 @@ stopBtn.addEventListener("click", () => {
 });
 
 attachBtn.addEventListener("click", () => fileInput.click());
+attachImageBtn.addEventListener("click", () => imageInput.click());
 attachVideoBtn.addEventListener("click", () => videoInput.click());
 
 fileInput.addEventListener("change", () => {
   const f = fileInput.files?.[0];
   if (f) {
+    videoInput.value = "";
+    imageInput.value = "";
+    showFileBadge(f.name);
+  } else {
+    clearFileBadge();
+  }
+});
+
+imageInput.addEventListener("change", () => {
+  const f = imageInput.files?.[0];
+  if (f) {
+    fileInput.value = "";
     videoInput.value = "";
     showFileBadge(f.name);
   } else {
@@ -1486,6 +1595,7 @@ videoInput.addEventListener("change", () => {
   const f = videoInput.files?.[0];
   if (f) {
     fileInput.value = "";
+    imageInput.value = "";
     showFileBadge(f.name);
   } else {
     clearFileBadge();
@@ -1494,6 +1604,7 @@ videoInput.addEventListener("change", () => {
 
 clearFileBtn.addEventListener("click", () => {
   fileInput.value = "";
+  imageInput.value = "";
   videoInput.value = "";
   clearFileBadge();
 });
@@ -1501,6 +1612,8 @@ clearFileBtn.addEventListener("click", () => {
 function getSelectedUpload() {
   const video = videoInput.files?.[0];
   if (video) return { file: video, kind: "video" };
+  const image = imageInput.files?.[0];
+  if (image) return { file: image, kind: "image" };
   const txt = fileInput.files?.[0];
   if (txt) return { file: txt, kind: "txt" };
   return null;
@@ -1526,8 +1639,7 @@ composer.addEventListener("submit", async (e) => {
   const selected = getSelectedUpload();
   if (selected) {
     const { file: f, kind } = selected;
-    const isVideo = kind === "video";
-    const label = isVideo ? "video" : "file";
+    const label = kind === "video" ? "video" : kind === "image" ? "image" : "file";
     const task = [promptEl.value.trim(), taskInput.value.trim()]
       .filter(Boolean)
       .join("\n\n");
@@ -1535,10 +1647,19 @@ composer.addEventListener("submit", async (e) => {
       ? `Analyze: ${f.name} — ${task}`
       : `Analyze: ${f.name}`;
 
-    createMessage("user", announce, {
+    const announceMsg = createMessage("user", announce, {
       tag: label,
       markdown: false,
     });
+
+    if (kind === "image") {
+      const img = document.createElement("img");
+      img.className = "image-preview";
+      img.alt = f.name;
+      img.src = URL.createObjectURL(f);
+      img.addEventListener("load", () => URL.revokeObjectURL(img.src));
+      announceMsg.bubble.appendChild(img);
+    }
 
     pushMessage({
       role: "user",
@@ -1556,11 +1677,17 @@ composer.addEventListener("submit", async (e) => {
     addTypingIndicator(assistantMsg.bubble);
 
     try {
-      if (isVideo) {
+      if (kind === "video") {
         if (fileStreamToggle.checked) {
           await analyzeVideoStreamToChat(f, task, assistantMsg);
         } else {
           await analyzeVideoSyncToChat(f, task, assistantMsg);
+        }
+      } else if (kind === "image") {
+        if (fileStreamToggle.checked) {
+          await analyzeImageStreamToChat(f, task, assistantMsg);
+        } else {
+          await analyzeImageSyncToChat(f, task, assistantMsg);
         }
       } else if (fileStreamToggle.checked) {
         await analyzeFileStreamToChat(f, task, assistantMsg);
@@ -1575,6 +1702,7 @@ composer.addEventListener("submit", async (e) => {
       setMessageTag(assistantMsg, `${label} • error`);
     } finally {
       fileInput.value = "";
+      imageInput.value = "";
       videoInput.value = "";
       clearFileBadge();
       taskInput.value = "";
@@ -1608,6 +1736,7 @@ composer.addEventListener("submit", async (e) => {
 
   const storedUserMsg = pushMessage({ role: "user", content: userText });
   addEditButton(userMsgObj, storedUserMsg);
+  addForkButton(userMsgObj, storedUserMsg);
   promptEl.value = "";
   autoResizeTextarea();
 
@@ -1634,11 +1763,19 @@ function analysisForm(file, task, frames) {
 }
 
 function completeAssistantMessage(assistantMsg, tag, content) {
+  const isAnalysis = /^(file|video|image)/.test(tag);
   setBubbleState(assistantMsg.bubble, "done");
   setBubbleContent(assistantMsg.bubble, content, { markdown: true });
-  setMessageTag(assistantMsg, tag);
-  appendAssistantMessageToHistory(content);
+  setMessageTag(
+    assistantMsg,
+    modelEl.value ? `${tag} • ${modelEl.value}` : tag,
+  );
+  const stored = appendAssistantMessageToHistory(content, {
+    kind: isAnalysis ? "analysis" : "chat",
+  });
   finalizeAssistantMessage(assistantMsg, content);
+  addForkButton(assistantMsg, stored);
+  if (!isAnalysis) addRegenerateButton(assistantMsg);
 }
 
 function showStreamError(assistantMsg, tagPrefix, errText, partial) {
@@ -1825,6 +1962,60 @@ async function analyzeFileStreamToChat(file, task, assistantMsg) {
         setBubbleContent(assistantMsg.bubble, partial() || "Working…", {
           markdown: true,
         });
+      });
+    },
+  );
+}
+
+async function analyzeImageSyncToChat(file, task, assistantMsg) {
+  setBubbleState(assistantMsg.bubble, "pending");
+  setBubbleContent(assistantMsg.bubble, "Uploading and analyzing…", {
+    markdown: false,
+  });
+
+  await runAssistantRequest(
+    assistantMsg,
+    "image • sync",
+    {
+      url: "/api/analyze-image",
+      body: analysisForm(file, task),
+    },
+    async (res) => {
+      const j = await res.json();
+      completeAssistantMessage(assistantMsg, "image • sync", j.result || "");
+    },
+  );
+}
+
+async function analyzeImageStreamToChat(file, task, assistantMsg) {
+  let accumulated = "";
+
+  await runAssistantRequest(
+    assistantMsg,
+    "image • stream",
+    {
+      url: "/api/analyze-image-stream",
+      body: analysisForm(file, task),
+      sse: true,
+      getPartial: () => accumulated,
+    },
+    async (res) => {
+      await streamSSE(res, (payload) => {
+        if (payload.error) {
+          showStreamError(
+            assistantMsg,
+            "image • stream",
+            payload.error,
+            accumulated,
+          );
+        } else if (payload.done) {
+          completeAssistantMessage(assistantMsg, "image • stream", accumulated);
+        } else if (payload.delta) {
+          accumulated += payload.delta;
+          setBubbleContent(assistantMsg.bubble, accumulated, {
+            markdown: true,
+          });
+        }
       });
     },
   );
