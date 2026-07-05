@@ -1,16 +1,22 @@
 # AI Chat Interface
 
-![Screenshot of the AI chat interface.](https://hosting.photobucket.com/bbcfb0d4-be20-44a0-94dc-65bff8947cf2/10c95629-8dde-4001-ae87-eedea68b09df.png)
+![Screenshot of the AI chat interface.](https://hosting.photobucket.com/bbcfb0d4-be20-44a0-94dc-65bff8947cf2/e7d0732d-bbcc-407e-b1e2-bc546be95d31.png)
 
-Local Flask-based AI chat interface for Ollama-hosted language models, featuring conversations, real-time streaming responses and `.txt` file upload support for analysis.
+Local Flask-based AI chat interface for Ollama-hosted language models, featuring streaming conversations, server-side tool use, file analysis and persistent, searchable chat history.
 
-## Overview
+## Application Overview
 
-In chat mode, users can send normal prompts through a browser UI, optionally include a system prompt, choose streaming or non-streaming responses, and adjust generation settings such as temperature, max predicted tokens and context window size. The backend forwards those requests to the Ollama `/api/chat` endpoint, then returns either a standard JSON response or a server-sent events stream so replies can appear progressively in the interface as they are generated.
+In chat mode users can send prompts, choose streaming or non-streaming responses, pick any locally installed Ollama model and adjust generation settings. The backend forwards those requests to the Ollama `/api/chat` endpoint, then returns either a JSON response or an events stream, with a stop button to cancel a response at any time. Replies are rendered as sanitized Markdown with code blocks, footnotes and mathematical notation.
 
-The application also supports `.txt` file analysis for larger documents. When a user uploads a text file, the app reads and validates it, splits long content into manageable chunks, summarizes each chunk with the model and then synthesizes those chunk summaries into a final structured overview. For smaller files, it can analyze the entire document directly in one pass. Meaning the app can be used both as a general-purpose local AI chat client and as a document analysis tool that extracts key ideas, themes, entities, dates and other insights from uploaded text.
+An optional tools mode lets the model call server-side functions while composing an answer. Such as executing Python code, searching the web, extracting text from web pages and reading the current date/time. Each tool call and its result appear inline in the conversation as a transcript, so users understand how the model arrived at its answer.
 
-## Set Up
+The application also analyzes uploaded files with streaming or non-streaming output and an optional task field to steer the analysis toward specific goals. Text documents are read and validated, then either analyzed in one pass or split into manageable chunks. Images are sent to vision-capable models for analysis, and videos are sampled into a number of frames with `FFmpeg` and analyzed similarly.
+
+Every message can be copied to the clipboard, user messages can be edited/resent, assistant responses can be regenerated and any point in a conversation can be forked into a new chat. Chats persist locally in the browser through `IndexedDB` and are automatically titled by the model. While a history panel offers search, renaming, deletion and JSON export/import of all chats. A statistics view charts weekly chat activity alongside overall totals as well.
+
+Together, all of these features make the app useful both as a general-purpose local AI chat client and document, image and video analysis tool.
+
+## Basic Setup Instructions
 
 Below are instructions for installing and running this application on a Linux machine.
 
@@ -58,12 +64,12 @@ Below are instructions for installing and running this application on a Linux ma
 
 This project repo is intended to demonstrate an ability to do the following:
 
-- Provide a local web-based chat interface for interacting with Ollama-powered AI models
+- Enable models to call server-side tools, such as executing Python code, searching the web, fetching web pages and reading the current date/time
 
-- Support both standard responses and streaming responses, enabling users to choose how AI output appears
+- Extend analysis beyond text to images and videos by sending uploads to vision-capable models, using `FFmpeg` to sample video frames
 
-- Allow users to upload `.txt` files, analyze their contents and generate summaries or structured responses
+- Persist conversations locally in the browser with automatic model-generated titles
 
-- Let users configure model behavior through options such as temperature, context length and response length
+- Render model output as sanitized Markdown with syntax-highlighted code, footnotes and mathematical notation
 
 If you have any questions or would like to collaborate, please reach out either on GitHub or via [my website](https://bretbernhoft.com/).
