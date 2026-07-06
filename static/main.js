@@ -93,6 +93,104 @@ marked.setOptions({
 
 marked.use(markedFootnote());
 
+function escapeHtml(text) {
+  return String(text)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function renderMathHtml(tex, displayMode) {
+  if (typeof katex === "undefined") return null;
+  try {
+    return katex.renderToString(tex, {
+      displayMode,
+      throwOnError: false,
+      output: "html",
+    });
+  } catch (err) {
+    return null;
+  }
+}
+
+const blockMathExtension = {
+  name: "blockMath",
+  level: "block",
+  start(src) {
+    const match = src.match(/(^|\n) {0,3}(?:\$\$|\\\[)/);
+    return match ? match.index + match[1].length : undefined;
+  },
+  tokenizer(src) {
+    const match = src.match(
+      /^ {0,3}(?:\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\])[ \t]*(?:\n+|$)/,
+    );
+    if (!match) return undefined;
+    return {
+      type: "blockMath",
+      raw: match[0],
+      text: (match[1] ?? match[2]).trim(),
+    };
+  },
+  renderer(token) {
+    const html = renderMathHtml(token.text, true);
+    return html ?? `<pre><code>${escapeHtml(token.text)}</code></pre>`;
+  },
+};
+
+const inlineMathExtension = {
+  name: "inlineMath",
+  level: "inline",
+  start(src) {
+    const match = src.match(/\$|\\\(|\\\[/);
+    return match ? match.index : undefined;
+  },
+  tokenizer(src) {
+    let match = src.match(/^\\\(([\s\S]+?)\\\)/);
+    if (match) {
+      return {
+        type: "inlineMath",
+        raw: match[0],
+        text: match[1].trim(),
+        display: false,
+      };
+    }
+    match = src.match(/^\\\[([\s\S]+?)\\\]/);
+    if (match) {
+      return {
+        type: "inlineMath",
+        raw: match[0],
+        text: match[1].trim(),
+        display: true,
+      };
+    }
+    match = src.match(/^\$\$([\s\S]+?)\$\$/);
+    if (match) {
+      return {
+        type: "inlineMath",
+        raw: match[0],
+        text: match[1].trim(),
+        display: true,
+      };
+    }
+    match = src.match(/^\$([^$\n]+?)\$(?!\d)/);
+    if (match && !/^\s/.test(match[1]) && !/\s$/.test(match[1])) {
+      return {
+        type: "inlineMath",
+        raw: match[0],
+        text: match[1],
+        display: false,
+      };
+    }
+    return undefined;
+  },
+  renderer(token) {
+    const html = renderMathHtml(token.text, token.display);
+    return html ?? `<code>${escapeHtml(token.raw)}</code>`;
+  },
+};
+
+marked.use({ extensions: [blockMathExtension, inlineMathExtension] });
+
 function ensureSeparatorBreaks(markdown) {
   const lines = (markdown || "").split("\n");
   const out = [];
