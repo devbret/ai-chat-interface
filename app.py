@@ -233,10 +233,23 @@ def handle_upstream_error(e):
 def home():
     return render_template("index.html", model=OLLAMA_MODEL, num_ctx_max=ANALYSIS_NUM_CTX)
 
+CHAT_SYSTEM_PROMPT = (
+    "You are a helpful assistant. Write all mathematical notation as LaTeX, "
+    "using $...$ delimiters for inline math and $$...$$ delimiters for display "
+    "math. Never copy {\\displaystyle ...} wrappers, MathML, or other raw math "
+    "markup from web pages or tool results; rewrite any formula you quote as "
+    "clean delimited LaTeX."
+)
+
+def _with_system_prompt(messages):
+    if any(isinstance(m, dict) and m.get("role") == "system" for m in messages):
+        return messages
+    return [{"role": "system", "content": CHAT_SYSTEM_PROMPT}] + list(messages)
+
 @app.post("/api/chat-sync")
 def chat_sync():
     data = request.get_json(force=True) or {}
-    messages = data.get("messages") or []
+    messages = _with_system_prompt(data.get("messages") or [])
     options  = data.get("options") or {}
     model    = data.get("model") or OLLAMA_MODEL
 
@@ -252,7 +265,7 @@ def chat_sync():
 @app.post("/api/chat-stream")
 def chat_stream():
     data = request.get_json(force=True) or {}
-    messages = data.get("messages") or []
+    messages = _with_system_prompt(data.get("messages") or [])
     options  = data.get("options") or {}
     model    = data.get("model") or OLLAMA_MODEL
 
@@ -390,7 +403,7 @@ def _assemble_tool_trace(events):
 @app.post("/api/chat-tools-sync")
 def chat_tools_sync():
     data = request.get_json(force=True) or {}
-    messages = data.get("messages") or []
+    messages = _with_system_prompt(data.get("messages") or [])
     options  = data.get("options") or {}
     model    = data.get("model") or OLLAMA_MODEL
 
@@ -403,7 +416,7 @@ def chat_tools_sync():
 @app.post("/api/chat-tools-stream")
 def chat_tools_stream():
     data = request.get_json(force=True) or {}
-    messages = data.get("messages") or []
+    messages = _with_system_prompt(data.get("messages") or [])
     options  = data.get("options") or {}
     model    = data.get("model") or OLLAMA_MODEL
 

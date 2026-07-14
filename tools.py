@@ -47,6 +47,8 @@ def run_python(code: str = "") -> str:
 def get_current_datetime() -> str:
     return datetime.now().astimezone().strftime("%A, %B %d, %Y at %I:%M %p %Z")
 
+_TEX_WRAPPER_RE = re.compile(r"\{\\(?:display|text)style(?![a-zA-Z])\s*([\s\S]*?)\s*\}")
+
 class _TextExtractor(HTMLParser):
     SKIP_TAGS = {"script", "style", "noscript", "template", "svg", "head",
                  "nav", "aside", "footer", "form", "button"}
@@ -57,23 +59,80 @@ class _TextExtractor(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self._skip_depth = 0
+        self._math_depth = 0
+        self._math_display = False
+        self._math_alttext = ""
+        self._mathwrap_depth = 0
+        self._tex_depth = 0
+        self._tex_parts = []
         self._parts = []
 
     def handle_starttag(self, tag, attrs):
-        if tag in self.SKIP_TAGS:
+        if tag == "math":
+            self._math_depth += 1
+            if self._math_depth == 1:
+                a = dict(attrs)
+                self._math_alttext = a.get("alttext") or ""
+                self._math_display = (a.get("display") or "") == "block"
+            return
+        if self._math_depth:
+            if tag == "annotation" and "tex" in (dict(attrs).get("encoding") or ""):
+                self._tex_depth += 1
+            return
+        if self._mathwrap_depth:
+            if tag == "span":
+                self._mathwrap_depth += 1
+            return
+        if tag == "span" and "mwe-math" in (dict(attrs).get("class") or ""):
+            self._mathwrap_depth = 1
+        elif tag in self.SKIP_TAGS:
             self._skip_depth += 1
         elif tag in self.BLOCK_TAGS:
             self._parts.append("\n")
 
     def handle_endtag(self, tag):
+        if tag == "math":
+            if self._math_depth:
+                self._math_depth -= 1
+                if not self._math_depth:
+                    self._flush_tex()
+            return
+        if self._math_depth:
+            if tag == "annotation":
+                self._tex_depth = max(0, self._tex_depth - 1)
+            return
+        if self._mathwrap_depth:
+            if tag == "span":
+                self._mathwrap_depth -= 1
+            return
         if tag in self.SKIP_TAGS:
             self._skip_depth = max(0, self._skip_depth - 1)
         elif tag in self.BLOCK_TAGS:
             self._parts.append("\n")
 
     def handle_data(self, data):
-        if not self._skip_depth and data:
+        if self._math_depth:
+            if self._tex_depth and data:
+                self._tex_parts.append(data)
+        elif not self._mathwrap_depth and not self._skip_depth and data:
             self._parts.append(data)
+
+    def _flush_tex(self):
+        tex = " ".join("".join(self._tex_parts).split())
+        self._tex_parts = []
+        alt = " ".join(self._math_alttext.split())
+        self._math_alttext = ""
+        if len(alt) > len(tex):
+            tex = alt
+        match = _TEX_WRAPPER_RE.fullmatch(tex)
+        if match:
+            tex = match.group(1)
+        if tex and not self._skip_depth:
+            if self._math_display:
+                self._parts.append(f"\n$${tex}$$\n")
+            else:
+                self._parts.append(f" ${tex}$ ")
+        self._math_display = False
 
     def text(self) -> str:
         lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in "".join(self._parts).split("\n")]
