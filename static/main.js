@@ -2494,8 +2494,13 @@ async function loadModels() {
       if (name === selected) opt.selected = true;
       modelEl.appendChild(opt);
     }
+    modelEl.title = modelEl.value;
   } catch {}
 }
+
+modelEl.addEventListener("change", () => {
+  modelEl.title = modelEl.value;
+});
 
 function autoResizeTextarea() {
   promptEl.style.height = "auto";
