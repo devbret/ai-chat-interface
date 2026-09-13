@@ -27,60 +27,64 @@
         </div>
 
         <div class="toggles">
-          <button
-            id="historyBtn"
-            type="button"
-            class="ghost-btn"
-            aria-haspopup="dialog"
-            aria-controls="historyPanel"
-            aria-label="Show previous chats"
-          >
-            Chats
-          </button>
+          <div class="toggle-row">
+            <button
+              id="historyBtn"
+              type="button"
+              class="ghost-btn"
+              aria-haspopup="dialog"
+              aria-controls="historyPanel"
+              aria-label="Show previous chats"
+            >
+              Chats
+            </button>
 
-          <button
-            id="newChatBtn"
-            type="button"
-            class="ghost-btn"
-            aria-label="Start a new conversation"
-          >
-            New chat
-          </button>
+            <button
+              id="newChatBtn"
+              type="button"
+              class="ghost-btn"
+              aria-label="Start a new conversation"
+            >
+              New chat
+            </button>
 
-          <button
-            id="themeToggle"
-            type="button"
-            class="theme-toggle"
-            aria-pressed="false"
-            aria-label="Toggle light and dark mode"
-          >
-            <span class="theme-toggle-icon" aria-hidden="true">🌙</span>
-            <span class="theme-toggle-label">Dark</span>
-          </button>
+            <button
+              id="themeToggle"
+              type="button"
+              class="theme-toggle"
+              aria-pressed="false"
+              aria-label="Toggle light and dark mode"
+            >
+              <span class="theme-toggle-icon" aria-hidden="true">🌙</span>
+              <span class="theme-toggle-label">Dark</span>
+            </button>
 
-          <label class="model-select">
-            Model
-            <select id="modelSelect" data-default="{{ model }}">
-              <option value="{{ model }}">{{ model }}</option>
-            </select>
-          </label>
+            <label class="model-select">
+              Model
+              <select id="modelSelect" data-default="{{ model }}" title="{{ model }}">
+                <option value="{{ model }}">{{ model }}</option>
+              </select>
+            </label>
+          </div>
 
-          <label>
-            <input id="streamToggle" type="checkbox" checked />
-            Stream
-          </label>
+          <div class="toggle-row">
+            <label>
+              <input id="streamToggle" type="checkbox" checked />
+              Stream
+            </label>
 
-          <label
-            title="Let the model call server-side tools (run Python, search the web, fetch pages, get the current time)"
-          >
-            <input id="toolsToggle" type="checkbox" checked />
-            Tools
-          </label>
+            <label
+              title="Let the model call server-side tools (run Python, search the web, fetch pages, get the current time)"
+            >
+              <input id="toolsToggle" type="checkbox" checked />
+              Tools
+            </label>
 
-          <label>
-            <input id="sysToggle" type="checkbox" />
-            Send system prompt
-          </label>
+            <label>
+              <input id="sysToggle" type="checkbox" />
+              Send system prompt
+            </label>
+          </div>
         </div>
       </header>
 
