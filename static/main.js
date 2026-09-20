@@ -322,6 +322,56 @@ function addTypingIndicator(bubble) {
   `;
 }
 
+function ensureThinkingPanel(assistantMsg) {
+  if (assistantMsg.thinking) return assistantMsg.thinking;
+
+  const details = document.createElement("details");
+  details.className = "thinking-panel";
+  details.open = true;
+
+  const summary = document.createElement("summary");
+  summary.className = "thinking-summary";
+  summary.textContent = "Thinking…";
+
+  const body = document.createElement("div");
+  body.className = "thinking-body";
+
+  details.appendChild(summary);
+  details.appendChild(body);
+  assistantMsg.wrapper.insertBefore(details, assistantMsg.bubble);
+
+  assistantMsg.thinking = {
+    details,
+    summary,
+    body,
+    text: "",
+    startedAt: Date.now(),
+    done: false,
+  };
+  return assistantMsg.thinking;
+}
+
+function appendThinking(assistantMsg, delta) {
+  if (!delta) return;
+  const t = ensureThinkingPanel(assistantMsg);
+  const pinned =
+    t.body.scrollHeight - t.body.scrollTop - t.body.clientHeight <= 24;
+  t.text += delta;
+  t.body.textContent = t.text;
+  if (pinned) t.body.scrollTop = t.body.scrollHeight;
+  scrollChatToBottom();
+}
+
+function finishThinking(assistantMsg) {
+  const t = assistantMsg?.thinking;
+  if (!t || t.done) return;
+  t.done = true;
+  const secs = Math.max(1, Math.round((Date.now() - t.startedAt) / 1000));
+  t.summary.textContent = `Thought for ${secs}s`;
+  t.details.open = false;
+  t.details.classList.add("done");
+}
+
 function isNearBottom(threshold = 80) {
   return (
     chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight <= threshold
@@ -1862,6 +1912,7 @@ function analysisForm(file, task, frames) {
 
 function completeAssistantMessage(assistantMsg, tag, content) {
   const isAnalysis = /^(file|video|image)/.test(tag);
+  finishThinking(assistantMsg);
   setBubbleState(assistantMsg.bubble, "done");
   setBubbleContent(assistantMsg.bubble, content, { markdown: true });
   setMessageTag(
@@ -1929,6 +1980,7 @@ async function runAssistantRequest(assistantMsg, tagPrefix, req, handler) {
       setMessageTag(assistantMsg, `${tagPrefix} • error`);
     }
   } finally {
+    finishThinking(assistantMsg);
     setStreamingUI(false);
     currentAbort = null;
   }
@@ -1950,6 +2002,7 @@ async function askSync(msgs, options) {
     },
     async (res) => {
       const data = await res.json();
+      if (data.thinking) appendThinking(assistantMsg, data.thinking);
       completeAssistantMessage(assistantMsg, "sync", data.content || "");
     },
   );
@@ -1976,11 +2029,11 @@ async function askStream(msgs, options) {
       getPartial: () => accumulated,
     },
     async (res) => {
-      setBubbleContent(assistantMsg.bubble, "", { markdown: true });
-
       await streamSSE(res, (payload) => {
         if (payload.error) {
           showStreamError(assistantMsg, "stream", payload.error, accumulated);
+        } else if (payload.thinking) {
+          appendThinking(assistantMsg, payload.thinking);
         } else if (payload.done) {
           completeAssistantMessage(assistantMsg, "stream", accumulated);
         } else if (payload.delta) {
@@ -2166,6 +2219,8 @@ async function askToolsStream(msgs, options) {
             payload.error,
             toolTranscriptMarkdown(trace),
           );
+        } else if (payload.thinking) {
+          appendThinking(assistantMsg, payload.thinking);
         } else if (payload.tool_call) {
           trace.push({
             type: "tool",
@@ -2248,6 +2303,11 @@ async function analyzeFileStreamToChat(file, task, assistantMsg) {
           return;
         }
 
+        if (payload.thinking) {
+          appendThinking(assistantMsg, payload.thinking);
+          return;
+        }
+
         if (payload.stage === "chunk") {
           chunkText += `\n\n## Chunk ${payload.index}/${payload.of}\n\n${payload.summary || ""}`;
         } else if (payload.stage === "final") {
@@ -2307,6 +2367,8 @@ async function analyzeImageStreamToChat(file, task, assistantMsg) {
             payload.error,
             accumulated,
           );
+        } else if (payload.thinking) {
+          appendThinking(assistantMsg, payload.thinking);
         } else if (payload.done) {
           completeAssistantMessage(assistantMsg, "image • stream", accumulated);
         } else if (payload.delta) {
@@ -2376,6 +2438,8 @@ async function analyzeVideoStreamToChat(file, task, assistantMsg) {
             `video • stream • ${frameCount} frames`,
             accumulated,
           );
+        } else if (payload.thinking) {
+          appendThinking(assistantMsg, payload.thinking);
         } else if (payload.stage === "frames") {
           frameCount = payload.frames || 0;
           addTypingIndicator(assistantMsg.bubble);

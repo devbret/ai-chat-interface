@@ -259,6 +259,7 @@ def chat_sync():
     return jsonify({
         "role": j.get("message", {}).get("role", "assistant"),
         "content": j.get("message", {}).get("content", ""),
+        "thinking": j.get("message", {}).get("thinking", ""),
         "raw": j
     })
 
@@ -280,8 +281,11 @@ def chat_stream():
                         j = json.loads(line.decode("utf-8"))
                     except Exception:
                         continue
-                    if "message" in j and "content" in j["message"]:
-                        yield f"data: {json.dumps({'delta': j['message']['content'], 'done': False})}\n\n"
+                    msg = j.get("message") or {}
+                    if msg.get("thinking"):
+                        yield f"data: {json.dumps({'thinking': msg['thinking']})}\n\n"
+                    if msg.get("content"):
+                        yield f"data: {json.dumps({'delta': msg['content'], 'done': False})}\n\n"
                     if j.get("done"):
                         yield "data: {\"done\": true}\n\n"
         except requests.RequestException as e:
@@ -336,6 +340,9 @@ def _tool_loop_events(messages, options, model):
                 except Exception:
                     continue
                 msg = j.get("message") or {}
+                thought = msg.get("thinking") or ""
+                if thought:
+                    yield {"thinking": thought}
                 piece = msg.get("content") or ""
                 if piece:
                     content_parts.append(piece)
@@ -496,8 +503,11 @@ def analyze_file_stream():
                             continue
                         try: j = json.loads(line.decode("utf-8"))
                         except Exception: continue
-                        if "message" in j and "content" in j["message"]:
-                            delta = j["message"]["content"]
+                        msg = j.get("message") or {}
+                        if msg.get("thinking"):
+                            yield f"data: {json.dumps({'stage':'final','thinking':msg['thinking']})}\n\n"
+                        if msg.get("content"):
+                            delta = msg["content"]
                             assembled.append(delta)
                             yield f"data: {json.dumps({'stage':'final','delta':delta})}\n\n"
                         if j.get("done"):
@@ -570,8 +580,11 @@ def analyze_image_stream():
                         j = json.loads(line.decode("utf-8"))
                     except Exception:
                         continue
-                    if "message" in j and "content" in j["message"]:
-                        yield f"data: {json.dumps({'delta': j['message']['content']})}\n\n"
+                    msg = j.get("message") or {}
+                    if msg.get("thinking"):
+                        yield f"data: {json.dumps({'thinking': msg['thinking']})}\n\n"
+                    if msg.get("content"):
+                        yield f"data: {json.dumps({'delta': msg['content']})}\n\n"
                     if j.get("done"):
                         yield "data: {\"done\": true}\n\n"
                         return
@@ -632,8 +645,11 @@ def analyze_video_stream():
                         j = json.loads(line.decode("utf-8"))
                     except Exception:
                         continue
-                    if "message" in j and "content" in j["message"]:
-                        yield f"data: {json.dumps({'delta': j['message']['content']})}\n\n"
+                    msg = j.get("message") or {}
+                    if msg.get("thinking"):
+                        yield f"data: {json.dumps({'thinking': msg['thinking']})}\n\n"
+                    if msg.get("content"):
+                        yield f"data: {json.dumps({'delta': msg['content']})}\n\n"
                     if j.get("done"):
                         yield "data: {\"done\": true}\n\n"
                         return
