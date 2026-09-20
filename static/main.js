@@ -334,7 +334,7 @@ function ensureThinkingPanel(assistantMsg) {
   summary.textContent = "Thinking…";
 
   const body = document.createElement("div");
-  body.className = "thinking-body";
+  body.className = "thinking-body md";
 
   details.appendChild(summary);
   details.appendChild(body);
@@ -347,25 +347,75 @@ function ensureThinkingPanel(assistantMsg) {
     text: "",
     startedAt: Date.now(),
     done: false,
+    frame: 0,
   };
   return assistantMsg.thinking;
+}
+
+function dedentThinking(md) {
+  const lines = md.split("\n");
+  const listItem = /^( +)(?:[*+-]|\d+[.)])(?=[ \t]|$)/;
+  let indent = Infinity;
+  let inFence = false;
+  let fenceChar = "";
+  for (const line of lines) {
+    const fence = line.match(/^ *(`|~){3,}/);
+    if (fence) {
+      if (!inFence) {
+        inFence = true;
+        fenceChar = fence[1];
+      } else if (fence[1] === fenceChar) {
+        inFence = false;
+        fenceChar = "";
+      }
+      continue;
+    }
+    if (inFence) continue;
+    const match = line.match(listItem);
+    if (match) indent = Math.min(indent, match[1].length);
+    if (indent === 0) return md;
+  }
+  if (!Number.isFinite(indent) || indent === 0) return md;
+  const strip = new RegExp(`^ {1,${indent}}`);
+  return lines.map((line) => line.replace(strip, "")).join("\n");
+}
+
+function closeOpenFence(md) {
+  const fences = md.match(/^(?:`{3,}|~{3,})/gm);
+  if (!fences || fences.length % 2 === 0) return md;
+  const last = fences[fences.length - 1];
+  return `${md}${md.endsWith("\n") ? "" : "\n"}${last[0].repeat(3)}`;
+}
+
+function renderThinking(t) {
+  const pinned =
+    t.body.scrollHeight - t.body.scrollTop - t.body.clientHeight <= 24;
+  t.body.innerHTML = renderMarkdown(closeOpenFence(dedentThinking(t.text)));
+  if (pinned) t.body.scrollTop = t.body.scrollHeight;
 }
 
 function appendThinking(assistantMsg, delta) {
   if (!delta) return;
   const t = ensureThinkingPanel(assistantMsg);
-  const pinned =
-    t.body.scrollHeight - t.body.scrollTop - t.body.clientHeight <= 24;
   t.text += delta;
-  t.body.textContent = t.text;
-  if (pinned) t.body.scrollTop = t.body.scrollHeight;
-  scrollChatToBottom();
+  if (!t.frame) {
+    t.frame = requestAnimationFrame(() => {
+      t.frame = 0;
+      renderThinking(t);
+      scrollChatToBottom();
+    });
+  }
 }
 
 function finishThinking(assistantMsg) {
   const t = assistantMsg?.thinking;
   if (!t || t.done) return;
   t.done = true;
+  if (t.frame) {
+    cancelAnimationFrame(t.frame);
+    t.frame = 0;
+  }
+  renderThinking(t);
   const secs = Math.max(1, Math.round((Date.now() - t.startedAt) / 1000));
   t.summary.textContent = `Thought for ${secs}s`;
   t.details.open = false;
